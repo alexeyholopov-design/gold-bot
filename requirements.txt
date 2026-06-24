@@ -2,3 +2,4 @@ yfinance
 python-telegram-bot
 Flask
 apscheduler
+requests
