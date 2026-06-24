@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
 # === НОВЫЙ ТОКЕН (вставьте сюда ваш, полученный от @BotFather) ===
-TOKEN = "ВАШ_НОВЫЙ_ТОКЕН_СЮДА"
+TOKEN = "8538708990:AAFC3rk1Z82IP5q5DJCsg2bU9z70uvFBalI"
 
 if not TOKEN:
     raise ValueError("TOKEN environment variable not set")
