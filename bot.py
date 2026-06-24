@@ -24,35 +24,43 @@ def run_flask():
 
 chat_id = None
 
-# === Список активов и их последние сигналы (RSI и EMA) ===
+# === Список активов с хранением трёх типов сигналов ===
 ASSETS = {
     "GOLD": {
         "symbol": "XAUT-USDT",
         "last_rsi_signal": None,
         "last_rsi_levels": None,
         "last_ema_signal": None,
-        "last_ema_price": None
+        "last_ema_price": None,
+        "last_combined_signal": None,
+        "last_combined_levels": None
     },
     "BTC": {
         "symbol": "BTC-USDT",
         "last_rsi_signal": None,
         "last_rsi_levels": None,
         "last_ema_signal": None,
-        "last_ema_price": None
+        "last_ema_price": None,
+        "last_combined_signal": None,
+        "last_combined_levels": None
     },
     "ETH": {
         "symbol": "ETH-USDT",
         "last_rsi_signal": None,
         "last_rsi_levels": None,
         "last_ema_signal": None,
-        "last_ema_price": None
+        "last_ema_price": None,
+        "last_combined_signal": None,
+        "last_combined_levels": None
     },
     "SOL": {
         "symbol": "SOL-USDT",
         "last_rsi_signal": None,
         "last_rsi_levels": None,
         "last_ema_signal": None,
-        "last_ema_price": None
+        "last_ema_price": None,
+        "last_combined_signal": None,
+        "last_combined_levels": None
     },
 }
 
@@ -158,24 +166,20 @@ def get_rsi_and_bars(symbol):
     return current_rsi, prev_rsi, high, low
 
 def get_ema_cross(symbol):
-    """Возвращает текущие значения EMA20, EMA50, предыдущие значения и сигнал пересечения."""
+    """Возвращает сигнал кроссовера EMA20/50 и текущие значения."""
     df = get_klines(symbol, interval=TIMEFRAME, limit=LOOKBACK)
     if df is None or len(df) < EMA_SLOW:
-        return None, None, None, None
+        return None, None, None, None, None
     close = df['Close'].values
     ema_fast = ema_indicator(close, EMA_FAST)
     ema_slow = ema_indicator(close, EMA_SLOW)
-    # Текущие значения
     cur_fast = ema_fast[-1]
     cur_slow = ema_slow[-1]
-    # Предыдущие значения
     prev_fast = ema_fast[-2] if len(ema_fast) > 1 else cur_fast
     prev_slow = ema_slow[-2] if len(ema_slow) > 1 else cur_slow
     signal = None
-    # Быстрое пересекает медленную снизу вверх (BUY)
     if prev_fast <= prev_slow and cur_fast > cur_slow:
         signal = "BUY"
-    # Быстрое пересекает медленную сверху вниз (SELL)
     elif prev_fast >= prev_slow and cur_fast < cur_slow:
         signal = "SELL"
     return signal, cur_fast, cur_slow, prev_fast, prev_slow
@@ -202,9 +206,9 @@ def check_signal(asset_name):
     symbol = asset["symbol"]
     price = get_current_price(symbol)
     if price is None:
-        return None, None, None, None, None, None, None, None
+        return (None, None, None, None, None, None, None, None, None)
 
-    # --- RSI сигнал ---
+    # --- RSI часть ---
     current_rsi, prev_rsi, high, low = get_rsi_and_bars(symbol)
     rsi_signal = None
     rsi_levels = None
@@ -225,21 +229,49 @@ def check_signal(asset_name):
             asset["last_rsi_signal"] = rsi_signal
             asset["last_rsi_levels"] = rsi_levels
         else:
-            # Если сигнал не изменился, не обновляем уровни
+            # Если сигнал не изменился, не обновляем
             pass
 
-    # --- EMA сигнал ---
+    # --- EMA часть ---
     ema_signal, cur_fast, cur_slow, prev_fast, prev_slow = get_ema_cross(symbol)
     if ema_signal and ema_signal != asset["last_ema_signal"]:
         asset["last_ema_signal"] = ema_signal
         asset["last_ema_price"] = price
-        # EMA сигнал без уровней (только цена)
     else:
-        ema_signal = None  # не отправляем повторный сигнал
+        ema_signal = None  # не отправляем повторно
 
-    # Возвращаем оба сигнала и вспомогательные данные
+    # --- Комбинированный сигнал (RSI + EMA фильтр) ---
+    combined_signal = None
+    combined_levels = None
+    if rsi_signal:
+        # Проверяем условие EMA для данного направления
+        if rsi_signal == "BUY" and cur_fast > cur_slow:
+            combined_signal = "BUY"
+        elif rsi_signal == "SELL" and cur_fast < cur_slow:
+            combined_signal = "SELL"
+        if combined_signal and combined_signal != asset["last_combined_signal"]:
+            # Используем те же уровни, что и для RSI (они уже посчитаны)
+            if rsi_levels:
+                combined_levels = rsi_levels.copy()
+            else:
+                # Если почему-то уровней нет, пересчитаем
+                sl, tp1, tp2 = calculate_levels(price, high, low, combined_signal)
+                combined_levels = {
+                    'price': price,
+                    'sl': sl,
+                    'tp1': tp1,
+                    'tp2': tp2,
+                    'rsi': current_rsi
+                }
+            asset["last_combined_signal"] = combined_signal
+            asset["last_combined_levels"] = combined_levels
+        else:
+            combined_signal = None  # не отправляем повторно
+
+    # Возвращаем все данные
     return (rsi_signal, rsi_levels, current_rsi,
-            ema_signal, price, cur_fast, cur_slow)
+            ema_signal, price, cur_fast, cur_slow,
+            combined_signal, combined_levels)
 
 # === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -248,13 +280,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Бот запущен!\n"
         "Отслеживаю: GOLD (XAUT), BTC, ETH, SOL.\n"
-        "Сигналы двух типов:\n"
-        "📈 RSI сигнал – при пересечении 30/70 (с уровнями SL/TP1/TP2)\n"
-        "📉 EMA сигнал – кроссовер EMA20/EMA50 (без уровней)\n\n"
+        "Три типа сигналов:\n"
+        "🔹 RSI – пересечение 30/70 (с уровнями SL/TP)\n"
+        "🔸 EMA – кроссовер EMA20/EMA50 (без уровней)\n"
+        "🔹 RSI+EMA – комбинированный (RSI + тренд по EMA) – сильнейший сигнал (с уровнями)\n\n"
         "Команды:\n"
-        "/gold, /btc, /eth, /sol – цена, RSI и оба сигнала\n"
+        "/gold, /btc, /eth, /sol – цена, RSI и все три сигнала\n"
         "/crypto – сводка по всем активам\n"
-        "/status – последние RSI и EMA сигналы по золоту"
+        "/status – последние сигналы по GOLD"
     )
     start_scheduler(context)
 
@@ -264,7 +297,9 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
     await update.message.reply_text(f"⏳ Загружаю данные по {asset_name}...")
     await asyncio.sleep(random.uniform(0.5, 1.5))
     
-    rsi_signal, rsi_levels, current_rsi, ema_signal, price, cur_fast, cur_slow = check_signal(asset_name)
+    (rsi_signal, rsi_levels, current_rsi,
+     ema_signal, price, cur_fast, cur_slow,
+     combined_signal, combined_levels) = check_signal(asset_name)
     asset = ASSETS[asset_name]
     if price is None or current_rsi is None:
         await update.message.reply_text(f"❌ Не удалось получить данные по {asset_name}. Попробуйте позже.")
@@ -278,10 +313,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
         lv = asset["last_rsi_levels"]
         msg += f"\n🔹 RSI сигнал: {asset['last_rsi_signal']}"
         if lv:
-            msg += f"\n   Вход: ${lv['price']:.2f}"
-            msg += f"\n   🛑 SL: ${lv['sl']:.2f}"
-            msg += f"\n   🎯 TP1: ${lv['tp1']:.2f} (1:1)"
-            msg += f"\n   🎯 TP2: ${lv['tp2']:.2f} (1:2)"
+            msg += f"\n   Вход: ${lv['price']:.2f} | SL: ${lv['sl']:.2f} | TP1: ${lv['tp1']:.2f} (1:1) | TP2: ${lv['tp2']:.2f} (1:2)"
     else:
         msg += "\n🔹 RSI сигнал: Нет"
 
@@ -291,6 +323,15 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
         msg += f"\n   EMA{EMA_FAST}: {cur_fast:.2f}, EMA{EMA_SLOW}: {cur_slow:.2f}"
     else:
         msg += f"\n🔸 EMA сигнал: Нет"
+
+    # Комбинированный сигнал
+    if asset["last_combined_signal"]:
+        lv = asset["last_combined_levels"]
+        msg += f"\n🔹 RSI+EMA сигнал: {asset['last_combined_signal']}"
+        if lv:
+            msg += f"\n   Вход: ${lv['price']:.2f} | SL: ${lv['sl']:.2f} | TP1: ${lv['tp1']:.2f} (1:1) | TP2: ${lv['tp2']:.2f} (1:2)"
+    else:
+        msg += "\n🔹 RSI+EMA сигнал: Нет"
 
     await update.message.reply_text(msg)
 
@@ -312,7 +353,8 @@ async def crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if price is not None and rsi is not None:
             rsi_sig = ASSETS[name]["last_rsi_signal"] or "Нет"
             ema_sig = ASSETS[name]["last_ema_signal"] or "Нет"
-            msg += f"**{name}** ({symbol}): ${price:.2f}  |  RSI: {rsi:.1f}  |  RSI сигнал: {rsi_sig}  |  EMA сигнал: {ema_sig}\n"
+            comb_sig = ASSETS[name]["last_combined_signal"] or "Нет"
+            msg += f"**{name}** ({symbol}): ${price:.2f}  |  RSI: {rsi:.1f}  |  RSI: {rsi_sig}  |  EMA: {ema_sig}  |  RSI+EMA: {comb_sig}\n"
         else:
             msg += f"**{name}**: данные недоступны\n"
     await update.message.reply_text(msg)
@@ -329,6 +371,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n🔸 EMA: {asset['last_ema_signal']} @ ${asset['last_ema_price']:.2f}"
     else:
         msg += "\n🔸 EMA: нет сигнала"
+    if asset["last_combined_signal"]:
+        lv = asset["last_combined_levels"]
+        msg += f"\n🔹 RSI+EMA: {asset['last_combined_signal']} @ ${lv['price']:.2f}, SL: ${lv['sl']:.2f}, TP1: ${lv['tp1']:.2f}, TP2: ${lv['tp2']:.2f}"
+    else:
+        msg += "\n🔹 RSI+EMA: нет сигнала"
     await update.message.reply_text(msg)
 
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
@@ -337,8 +384,11 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
         return
     for name in ASSETS:
         print(f"🔍 Проверка {name}...")
-        rsi_signal, rsi_levels, current_rsi, ema_signal, price, cur_fast, cur_slow = check_signal(name)
-        # Отправляем RSI сигнал, если он новый и есть уровни
+        (rsi_signal, rsi_levels, current_rsi,
+         ema_signal, price, cur_fast, cur_slow,
+         combined_signal, combined_levels) = check_signal(name)
+        
+        # Отправляем RSI сигнал
         if rsi_signal and rsi_levels:
             lv = rsi_levels
             emoji = "📈" if rsi_signal == "BUY" else "📉"
@@ -349,13 +399,27 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
             msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
             msg += f"📊 RSI: {lv['rsi']:.1f}"
             await context.bot.send_message(chat_id=chat_id, text=msg)
-        # Отправляем EMA сигнал, если он новый
+        
+        # Отправляем EMA сигнал
         if ema_signal:
             emoji = "📈" if ema_signal == "BUY" else "📉"
             msg = f"{emoji} EMA СИГНАЛ НА {name} ({ASSETS[name]['symbol']}) (15м)\n"
             msg += f"💰 Цена: ${price:.2f}\n"
             msg += f"📊 EMA{EMA_FAST}: {cur_fast:.2f}, EMA{EMA_SLOW}: {cur_slow:.2f}\n"
             msg += f"🔹 Действие: {ema_signal}"
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        
+        # Отправляем комбинированный сигнал
+        if combined_signal and combined_levels:
+            lv = combined_levels
+            emoji = "📈" if combined_signal == "BUY" else "📉"
+            msg = f"{emoji} RSI+EMA СИГНАЛ НА {name} ({ASSETS[name]['symbol']}) (15м)\n"
+            msg += f"💰 Вход: ${lv['price']:.2f}\n"
+            msg += f"🛑 SL: ${lv['sl']:.2f}\n"
+            msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
+            msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
+            msg += f"📊 RSI: {lv['rsi']:.1f}"
+            msg += f"\n🔹 EMA{EMA_FAST}: {cur_fast:.2f}, EMA{EMA_SLOW}: {cur_slow:.2f}"
             await context.bot.send_message(chat_id=chat_id, text=msg)
 
 async def daily_report(context: ContextTypes.DEFAULT_TYPE):
@@ -370,7 +434,8 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
         if price is not None and rsi is not None:
             rsi_sig = ASSETS[name]["last_rsi_signal"] or "Нет"
             ema_sig = ASSETS[name]["last_ema_signal"] or "Нет"
-            msg += f"**{name}** ({symbol}): ${price:.2f}  |  RSI: {rsi:.1f}  |  RSI: {rsi_sig}  |  EMA: {ema_sig}\n"
+            comb_sig = ASSETS[name]["last_combined_signal"] or "Нет"
+            msg += f"**{name}** ({symbol}): ${price:.2f}  |  RSI: {rsi:.1f}  |  RSI: {rsi_sig}  |  EMA: {ema_sig}  |  RSI+EMA: {comb_sig}\n"
         else:
             msg += f"**{name}**: данные недоступны\n"
     await context.bot.send_message(chat_id=chat_id, text=msg)
