@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
 # === ТОКЕН ===
-TOKEN = "7765279031:AAGAAZ66s0e-wG3GcfOYHeDzko-ZvWXZpWo"
+TOKEN = os.environ.get('TOKEN')
 
 chat_id = None
 
