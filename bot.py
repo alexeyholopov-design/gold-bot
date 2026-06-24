@@ -11,6 +11,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
+print("🔧 Начало загрузки скрипта")
+
 TOKEN = "8538708990:AAFC3rk1Z82IP5q5DJCsg2bU9z70uvFBalI"
 
 app_flask = Flask(__name__)
@@ -71,16 +73,13 @@ def get_klines(symbol=None, interval="15m", limit=100):
                     print(f"🔍 Получено свечей для {sym}: {len(candles)}")
                     if len(candles) == 0:
                         continue
-                    # Покажем сырые данные
-                    print(f"🔍 Первые 3 сырые свечи: {candles[:3]}")
                     df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    # Принудительно преобразуем в числа
                     for col in ["Open", "High", "Low", "Close"]:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
-                    # Проверим, есть ли NaN
-                    if df[["Open", "High", "Low", "Close"]].isna().any().any():
-                        print("⚠️ В данных есть NaN, возможно, проблема с форматом")
-                        print(df[["Open", "High", "Low", "Close"]].head())
+                    # Проверим и заполним NaN
+                    if df[["Close"]].isna().any().any():
+                        print("⚠️ Найдены NaN в Close, заполняем предыдущими значениями")
+                        df = df.ffill().bfill()
                     print(f"✅ Kline получены для {sym}, строк: {len(df)}")
                     return df
                 else:
@@ -102,13 +101,12 @@ def get_klines(symbol=None, interval="15m", limit=100):
                 print(f"🔍 Получено свечей для {symbol}: {len(candles)}")
                 if len(candles) == 0:
                     return None
-                print(f"🔍 Первые 3 сырые свечи: {candles[:3]}")
                 df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
                 for col in ["Open", "High", "Low", "Close"]:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                if df[["Open", "High", "Low", "Close"]].isna().any().any():
-                    print("⚠️ В данных есть NaN, возможно, проблема с форматом")
-                    print(df[["Open", "High", "Low", "Close"]].head())
+                if df[["Close"]].isna().any().any():
+                    print("⚠️ Найдены NaN в Close, заполняем")
+                    df = df.ffill().bfill()
                 return df
         except Exception as e:
             print(f"❌ Ошибка Kline с {symbol}: {e}")
@@ -123,12 +121,6 @@ def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
                 time.sleep(base_delay * (attempt + 1))
                 continue
 
-            # Проверим, есть ли NaN в ценах
-            if df[["Close", "High", "Low"]].isna().any().any():
-                print("⚠️ В данных есть NaN, заполняем их предыдущими значениями")
-                df = df.ffill().bfill()  # заполним пропуски
-
-            print(f"🔍 Размер df для RSI: {len(df)}")
             close = df['Close']
             print(f"🔍 Цены закрытия (последние 5): {close.tail(5).tolist()}")
 
@@ -297,7 +289,7 @@ def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
     print("📅 Планировщик запущен (проверка каждые 15 минут)")
 
 def run_bot():
-    print("🤖 Бот запускается...")
+    print("🚀 run_bot вызвана")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
@@ -310,8 +302,8 @@ def run_bot():
     else:
         print("❌ Тестовая цена не получена")
 
-    # Также протестируем получение свечей и расчёт RSI
-    print("🧪 Тестируем получение свечей...")
+    # Тест RSI
+    print("🧪 Тестируем свечи и RSI...")
     test_rsi, _, _, _ = get_rsi_and_bars()
     if test_rsi is not None:
         print(f"✅ Тестовый RSI получен: {test_rsi:.2f}")
@@ -322,9 +314,12 @@ def run_bot():
     app.run_polling(drop_pending_updates=True)
 
 def main():
+    print("🔧 main вызвана")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
+    print("🔧 Flask запущен в потоке, теперь вызываем run_bot")
     run_bot()
 
 if __name__ == "__main__":
+    print("🔧 Запуск main")
     main()
