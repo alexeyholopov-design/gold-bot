@@ -11,7 +11,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
-TOKEN = os.environ.get('TOKEN')
+# === НОВЫЙ ТОКЕН (вставьте сюда ваш, полученный от @BotFather) ===
+TOKEN = "ВАШ_НОВЫЙ_ТОКЕН_СЮДА"
+
 if not TOKEN:
     raise ValueError("TOKEN environment variable not set")
 
@@ -35,16 +37,19 @@ TIMEFRAME = "15"
 LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 
-# === Функции для работы с Bybit ===
+# === Функции для работы с Bybit (спот XAUTUSDT) ===
 def get_current_price():
     try:
         url = "https://api.bybit.com/v5/market/tickers"
-        params = {"category": "linear", "symbol": "XAUUSDT"}
+        params = {"category": "spot", "symbol": "XAUTUSDT"}
         response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            print(f"HTTP error: {response.status_code}")
+            return None
         data = response.json()
         if data["retCode"] == 0:
             price = float(data["result"]["list"][0]["lastPrice"])
-            print(f"💰 Bybit XAUUSDT: ${price:.2f}")
+            print(f"💰 Bybit XAUTUSDT: ${price:.2f}")
             return price
         else:
             print(f"Ошибка Bybit: {data['retMsg']}")
@@ -53,11 +58,14 @@ def get_current_price():
         print(f"Ошибка запроса к Bybit: {e}")
         return None
 
-def get_klines(symbol="XAUUSDT", interval="15", limit=100):
+def get_klines(symbol="XAUTUSDT", interval="15", limit=100):
     try:
         url = "https://api.bybit.com/v5/market/kline"
-        params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
+        params = {"category": "spot", "symbol": symbol, "interval": interval, "limit": limit}
         response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            print(f"HTTP error: {response.status_code}")
+            return None
         data = response.json()
         if data["retCode"] == 0:
             candles = data["result"]["list"]
@@ -71,7 +79,7 @@ def get_klines(symbol="XAUUSDT", interval="15", limit=100):
         print(f"Ошибка запроса Kline к Bybit: {e}")
         return None
 
-def get_rsi_and_bars(ticker_symbol="XAUUSDT", retries=3, base_delay=5):
+def get_rsi_and_bars(ticker_symbol="XAUTUSDT", retries=3, base_delay=5):
     for attempt in range(retries):
         try:
             df = get_klines(symbol=ticker_symbol, interval=TIMEFRAME, limit=LOOKBACK)
@@ -151,7 +159,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         "👋 Бот торговых сигналов запущен!\n"
-        "Анализирую золото (XAUUSDT фьючерс) с Bybit на 15-минутных свечах.\n"
+        "Анализирую золото (XAUTUSDT спот) с Bybit на 15-минутных свечах.\n"
         "Сигналы:\n"
         "📈 BUY  – когда RSI выходит из зоны перепроданности (<30)\n"
         "📉 SELL – когда RSI выходит из зоны перекупленности (>70)\n\n"
@@ -171,7 +179,7 @@ async def gold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_rsi, prev_rsi, _, _ = get_rsi_and_bars()
     if price is not None and current_rsi is not None:
         signal_text = last_signal if last_signal else "Нет сигнала"
-        msg = f"💰 Золото (XAUUSDT): ${price:.2f}\n📊 RSI (14): {current_rsi:.1f}\n📌 Последний сигнал: {signal_text}"
+        msg = f"💰 Золото (XAUTUSDT): ${price:.2f}\n📊 RSI (14): {current_rsi:.1f}\n📌 Последний сигнал: {signal_text}"
         if last_levels and last_signal:
             msg += f"\n\n--- Уровни (последний сигнал {last_signal}) ---"
             msg += f"\nВход: ${last_levels['price']:.2f}"
@@ -219,7 +227,7 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
     current_rsi, _, _, _ = get_rsi_and_bars()
     if price is not None and current_rsi is not None:
         msg = f"📊 ПЛАНОВЫЙ ОТЧЁТ (15 мин)\n"
-        msg += f"💰 Золото (XAUUSDT): ${price:.2f}\n"
+        msg += f"💰 Золото (XAUTUSDT): ${price:.2f}\n"
         msg += f"📊 RSI (14): {current_rsi:.1f}\n"
         msg += f"📌 Последний сигнал: {last_signal if last_signal else 'Нет сигнала'}"
         if last_levels and last_signal:
@@ -244,6 +252,15 @@ def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
 def run_bot():
     print("🤖 Бот запускается...")
     app = Application.builder().token(TOKEN).build()
+    
+    # Принудительный сброс вебхука и удаление висящих обновлений
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+        print("✅ Вебхук сброшен, pending updates удалены")
+    except Exception as e:
+        print(f"⚠️ Не удалось сбросить вебхук: {e}")
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("status", status))
