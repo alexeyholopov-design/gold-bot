@@ -9,12 +9,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 import yfinance as yf
 
-# === ТОКЕН (будет взят из переменной окружения) ===
 TOKEN = os.environ.get('TOKEN')
 if not TOKEN:
     raise ValueError("TOKEN environment variable not set")
 
-# === Flask для Render ===
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -24,7 +22,6 @@ def health_check():
 def run_flask():
     app_flask.run(host='0.0.0.0', port=10000)
 
-# === Бот ===
 chat_id = None
 last_signal = None
 
@@ -34,39 +31,74 @@ RSI_OVERSOLD = 30
 TIMEFRAME = "15m"
 LOOKBACK = 100
 
-def get_rsi(ticker_symbol="GC=F"):
-    """Загружает данные и рассчитывает RSI."""
+def get_current_price(ticker_symbol="XAUUSD=X"):
+    """Получает актуальную цену (почти без задержки) из минутных данных."""
     try:
         ticker = yf.Ticker(ticker_symbol)
-        # Правильный способ: period="5d", interval="15m"
-        data = ticker.history(period="5d", interval=TIMEFRAME)
-        if data.empty or len(data) < 2:
-            print("Нет данных или слишком мало свечей")
-            return None, None, None
-        
-        df = data.tail(LOOKBACK)
-        if len(df) < 2:
-            return None, None, None
-        
-        close = df['Close']
-        price = close.iloc[-1]
-        
-        delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        current_rsi = rsi.iloc[-1]
-        prev_rsi = rsi.iloc[-2] if len(rsi) > 1 else current_rsi
-        return price, current_rsi, prev_rsi
+        data = ticker.history(period="1d", interval="1m")
+        if not data.empty:
+            price = data['Close'].iloc[-1]
+            print(f"Текущая цена: {price:.2f}")
+            return price
+        else:
+            return None
     except Exception as e:
-        print(f"Ошибка RSI: {e}")
+        print(f"Ошибка получения цены: {e}")
+        return None
+
+def get_rsi(ticker_symbol="XAUUSD=X", retries=3, base_delay=5):
+    """Получает 15-минутные свечи и рассчитывает RSI."""
+    for attempt in range(retries):
+        try:
+            ticker = yf.Ticker(ticker_symbol)
+            data = ticker.history(period="5d", interval=TIMEFRAME)
+            if data.empty or len(data) < 2:
+                print(f"Попытка {attempt+1}: нет 15-минутных данных")
+                time.sleep(base_delay * (attempt + 1))
+                continue
+            
+            df = data.tail(LOOKBACK)
+            if len(df) < 2:
+                print(f"Попытка {attempt+1}: недостаточно свечей")
+                time.sleep(base_delay * (attempt + 1))
+                continue
+            
+            close = df['Close']
+            # RSI
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            current_rsi = rsi.iloc[-1]
+            prev_rsi = rsi.iloc[-2] if len(rsi) > 1 else current_rsi
+            print(f"RSI получен: {current_rsi:.1f}")
+            return current_rsi, prev_rsi
+        except Exception as e:
+            print(f"Ошибка RSI (попытка {attempt+1}): {e}")
+            if "Rate limited" in str(e):
+                wait = base_delay * (attempt + 1) * 2
+                print(f"Rate limit, ждём {wait} секунд")
+                time.sleep(wait)
+            else:
+                time.sleep(base_delay * (attempt + 1))
+    print("❌ Не удалось получить RSI после всех попыток")
+    return None, None
+
+def get_price_and_rsi():
+    """Возвращает актуальную цену и текущий/предыдущий RSI."""
+    price = get_current_price()
+    if price is None:
         return None, None, None
+    current_rsi, prev_rsi = get_rsi()
+    if current_rsi is None:
+        return price, None, None
+    return price, current_rsi, prev_rsi
 
 def check_signal():
     global last_signal
-    price, current_rsi, prev_rsi = get_rsi()
+    price, current_rsi, prev_rsi = get_price_and_rsi()
     if price is None or current_rsi is None:
         return None, None, None
     
@@ -86,7 +118,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         "👋 Бот торговых сигналов запущен!\n"
-        "Анализирую золото (GC=F) на 15-минутных свечах.\n"
+        "Анализирую золото (XAUUSD) на 15-минутных свечах.\n"
+        "Цена обновляется с минутной задержкой, RSI — на 15-минутных свечах.\n"
         "Сигналы:\n"
         "📈 BUY  – когда RSI выходит из зоны перепроданности (<30)\n"
         "📉 SELL – когда RSI выходит из зоны перекупленности (>70)\n\n"
@@ -100,13 +133,13 @@ async def gold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id, last_signal
     chat_id = update.effective_chat.id
     await update.message.reply_text("⏳ Загружаю данные...")
-    await asyncio.sleep(random.uniform(1, 2))
-    price, current_rsi, _ = get_rsi()
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+    price, current_rsi, _ = get_price_and_rsi()
     if price is not None and current_rsi is not None:
         signal_text = last_signal if last_signal else "Нет сигнала"
         await update.message.reply_text(
-            f"💰 Золото: ${price:.2f}\n"
-            f"📊 RSI (14): {current_rsi:.1f}\n"
+            f"💰 Золото (спот): ${price:.2f}\n"
+            f"📊 RSI (14) на 15мин: {current_rsi:.1f}\n"
             f"📌 Последний сигнал: {signal_text}"
         )
     else:
@@ -122,7 +155,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     if chat_id is None:
         return
-    await asyncio.sleep(random.uniform(0.5, 1.5))
+    print("🔍 Проверка сигнала...")
     signal, price, rsi = check_signal()
     if signal and price is not None and rsi is not None:
         emoji = "📈" if signal == "BUY" else "📉"
@@ -130,7 +163,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
             text=f"{emoji} ТОРГОВЫЙ СИГНАЛ (15 мин)\n"
                  f"Тип: {signal}\n"
-                 f"Цена: ${price:.2f}\n"
+                 f"Цена (спот): ${price:.2f}\n"
                  f"RSI (14): {rsi:.1f}\n"
                  f"Уровень: {'перепроданность' if signal == 'BUY' else 'перекупленность'}"
         )
@@ -139,24 +172,26 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
     global chat_id, last_signal
     if chat_id is None:
         return
-    price, current_rsi, _ = get_rsi()
+    price, current_rsi, _ = get_price_and_rsi()
     if price is not None and current_rsi is not None:
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"📊 ПЛАНОВЫЙ ОТЧЁТ (15 мин)\n"
-                 f"💰 Золото: ${price:.2f}\n"
+                 f"💰 Золото (спот): ${price:.2f}\n"
                  f"📊 RSI (14): {current_rsi:.1f}\n"
                  f"📌 Последний сигнал: {last_signal if last_signal else 'Нет сигнала'}"
         )
 
 def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
     if context.job_queue is None:
+        print("⚠️ JobQueue не доступен. Установите apscheduler.")
         return
     for job in context.job_queue.jobs():
         job.schedule_removal()
-    context.job_queue.run_repeating(check_and_send_signal, interval=300, first=10)
+    context.job_queue.run_repeating(check_and_send_signal, interval=900, first=10)
     context.job_queue.run_daily(daily_report, time=dt_time(hour=12, minute=0), days=tuple(range(7)))
     context.job_queue.run_daily(daily_report, time=dt_time(hour=18, minute=0), days=tuple(range(7)))
+    print("📅 Планировщик запущен (проверка каждые 15 минут)")
 
 def run_bot():
     print("🤖 Бот запускается...")
