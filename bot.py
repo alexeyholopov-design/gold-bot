@@ -11,8 +11,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
-print("🔧 Начало загрузки скрипта")
-
 TOKEN = "8538708990:AAFC3rk1Z82IP5q5DJCsg2bU9z70uvFBalI"
 
 app_flask = Flask(__name__)
@@ -73,13 +71,11 @@ def get_klines(symbol=None, interval="15m", limit=100):
                     print(f"🔍 Получено свечей для {sym}: {len(candles)}")
                     if len(candles) == 0:
                         continue
-                    df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    for col in ["Open", "High", "Low", "Close"]:
+                    # Создаём DataFrame, колонки будут: open, close, high, low, volume, time
+                    df = pd.DataFrame(candles)
+                    # Приводим к float сразу все ценовые колонки
+                    for col in ['open', 'close', 'high', 'low']:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
-                    # Проверим и заполним NaN
-                    if df[["Close"]].isna().any().any():
-                        print("⚠️ Найдены NaN в Close, заполняем предыдущими значениями")
-                        df = df.ffill().bfill()
                     print(f"✅ Kline получены для {sym}, строк: {len(df)}")
                     return df
                 else:
@@ -101,12 +97,9 @@ def get_klines(symbol=None, interval="15m", limit=100):
                 print(f"🔍 Получено свечей для {symbol}: {len(candles)}")
                 if len(candles) == 0:
                     return None
-                df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                for col in ["Open", "High", "Low", "Close"]:
+                df = pd.DataFrame(candles)
+                for col in ['open', 'close', 'high', 'low']:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                if df[["Close"]].isna().any().any():
-                    print("⚠️ Найдены NaN в Close, заполняем")
-                    df = df.ffill().bfill()
                 return df
         except Exception as e:
             print(f"❌ Ошибка Kline с {symbol}: {e}")
@@ -121,7 +114,13 @@ def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
                 time.sleep(base_delay * (attempt + 1))
                 continue
 
-            close = df['Close']
+            # Проверка на NaN
+            if df[['close', 'high', 'low']].isna().any().any():
+                print("⚠️ В данных есть NaN, заполняем их предыдущими значениями")
+                df = df.ffill().bfill()
+
+            print(f"🔍 Размер df для RSI: {len(df)}")
+            close = df['close']
             print(f"🔍 Цены закрытия (последние 5): {close.tail(5).tolist()}")
 
             delta = close.diff()
@@ -135,8 +134,8 @@ def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
             prev_rsi = rsi.iloc[-2] if len(rsi) > 1 else current_rsi
 
             bars = df.tail(BARS_FOR_LEVELS)
-            high = bars['High']
-            low = bars['Low']
+            high = bars['high']
+            low = bars['low']
 
             print(f"RSI: {current_rsi:.1f}, high_max: {high.max():.2f}, low_min: {low.min():.2f}")
             return current_rsi, prev_rsi, high, low
@@ -302,8 +301,7 @@ def run_bot():
     else:
         print("❌ Тестовая цена не получена")
 
-    # Тест RSI
-    print("🧪 Тестируем свечи и RSI...")
+    print("🧪 Тестируем получение свечей...")
     test_rsi, _, _, _ = get_rsi_and_bars()
     if test_rsi is not None:
         print(f"✅ Тестовый RSI получен: {test_rsi:.2f}")
@@ -321,5 +319,5 @@ def main():
     run_bot()
 
 if __name__ == "__main__":
-    print("🔧 Запуск main")
+    print("🔧 Начало загрузки скрипта")
     main()
