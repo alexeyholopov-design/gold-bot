@@ -42,39 +42,56 @@ def get_current_price():
     try:
         url = "https://api.bybit.com/v5/market/tickers"
         params = {"category": "spot", "symbol": "XAUTUSDT"}
-        print(f"🔍 Запрос к Bybit: {url} {params}")
-        response = requests.get(url, params=params, timeout=10)
-        print(f"🔍 Статус ответа: {response.status_code}")
-        print(f"🔍 Текст ответа (первые 500 символов): {response.text[:500]}")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bybit.com/"
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         if response.status_code != 200:
-            print(f"❌ HTTP ошибка: {response.status_code}")
+            print(f"HTTP error: {response.status_code}")
             return None
         data = response.json()
-        print(f"🔍 JSON получен: {data.keys() if isinstance(data, dict) else 'not dict'}")
         if data["retCode"] == 0:
             price = float(data["result"]["list"][0]["lastPrice"])
             print(f"💰 Bybit XAUTUSDT: ${price:.2f}")
             return price
         else:
-            print(f"❌ Ошибка Bybit: {data['retMsg']}")
+            print(f"Ошибка Bybit: {data['retMsg']}")
             return None
     except Exception as e:
-        print(f"❌ Исключение в get_current_price: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Ошибка запроса к Bybit: {e}")
         return None
 
 def get_klines(symbol="XAUTUSDT", interval="15", limit=100):
     try:
         url = "https://api.bybit.com/v5/market/kline"
         params = {"category": "spot", "symbol": symbol, "interval": interval, "limit": limit}
-        print(f"🔍 Запрос Kline: {url} {params}")
-        response = requests.get(url, params=params, timeout=10)
-        print(f"🔍 Статус Kline: {response.status_code}")
-        print(f"🔍 Текст Kline (первые 300): {response.text[:300]}")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bybit.com/"
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         if response.status_code != 200:
-            print(f"❌ HTTP ошибка Kline: {response.status_code}")
+            print(f"HTTP error Kline: {response.status_code}")
             return None
+        data = response.json()
+        if data["retCode"] == 0:
+            candles = data["result"]["list"]
+            df = pd.DataFrame(candles, columns=["Open", "High", "Low", "Close", "Volume", "Turnover", "Timestamp"])
+            df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
+            return df
+        else:
+            print(f"Ошибка Kline Bybit: {data['retMsg']}")
+            return None
+    except Exception as e:
+        print(f"Ошибка запроса Kline к Bybit: {e}")
+        return None
         data = response.json()
         if data["retCode"] == 0:
             candles = data["result"]["list"]
