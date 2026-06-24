@@ -33,7 +33,6 @@ TIMEFRAME = "15m"
 LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 
-# === Правильные символы для BingX (золото) ===
 SYMBOLS_TO_TRY = ["XAUT-USDT"]
 
 def get_current_price():
@@ -57,7 +56,6 @@ def get_current_price():
     print("❌ Ни один символ не подошёл для цены")
     return None
 
-# === Функция get_klines с подробным логированием ===
 def get_klines(symbol=None, interval="15m", limit=100):
     if symbol is None:
         for sym in SYMBOLS_TO_TRY:
@@ -73,10 +71,16 @@ def get_klines(symbol=None, interval="15m", limit=100):
                     print(f"🔍 Получено свечей для {sym}: {len(candles)}")
                     if len(candles) == 0:
                         continue
-                    print(f"🔍 Первые 3 свечи: {candles[:3]}")
-                    print(f"🔍 Последние 3 свечи: {candles[-3:]}")
+                    # Покажем сырые данные
+                    print(f"🔍 Первые 3 сырые свечи: {candles[:3]}")
                     df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
+                    # Принудительно преобразуем в числа
+                    for col in ["Open", "High", "Low", "Close"]:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    # Проверим, есть ли NaN
+                    if df[["Open", "High", "Low", "Close"]].isna().any().any():
+                        print("⚠️ В данных есть NaN, возможно, проблема с форматом")
+                        print(df[["Open", "High", "Low", "Close"]].head())
                     print(f"✅ Kline получены для {sym}, строк: {len(df)}")
                     return df
                 else:
@@ -98,16 +102,18 @@ def get_klines(symbol=None, interval="15m", limit=100):
                 print(f"🔍 Получено свечей для {symbol}: {len(candles)}")
                 if len(candles) == 0:
                     return None
-                print(f"🔍 Первые 3 свечи: {candles[:3]}")
-                print(f"🔍 Последние 3 свечи: {candles[-3:]}")
+                print(f"🔍 Первые 3 сырые свечи: {candles[:3]}")
                 df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
+                for col in ["Open", "High", "Low", "Close"]:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                if df[["Open", "High", "Low", "Close"]].isna().any().any():
+                    print("⚠️ В данных есть NaN, возможно, проблема с форматом")
+                    print(df[["Open", "High", "Low", "Close"]].head())
                 return df
         except Exception as e:
             print(f"❌ Ошибка Kline с {symbol}: {e}")
         return None
 
-# === Функция get_rsi_and_bars с подробным логированием ===
 def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
     for attempt in range(retries):
         try:
@@ -116,6 +122,11 @@ def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
                 print(f"❌ Недостаточно данных для расчёта RSI (получено {len(df) if df is not None else 0})")
                 time.sleep(base_delay * (attempt + 1))
                 continue
+
+            # Проверим, есть ли NaN в ценах
+            if df[["Close", "High", "Low"]].isna().any().any():
+                print("⚠️ В данных есть NaN, заполняем их предыдущими значениями")
+                df = df.ffill().bfill()  # заполним пропуски
 
             print(f"🔍 Размер df для RSI: {len(df)}")
             close = df['Close']
@@ -292,13 +303,20 @@ def run_bot():
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("status", status))
 
-    # === ТЕСТОВЫЙ ЗАПРОС ПРИ СТАРТЕ ===
     print("🧪 Тестируем подключение к BingX...")
     test_price = get_current_price()
     if test_price:
         print(f"✅ Тестовая цена получена: ${test_price:.2f}")
     else:
         print("❌ Тестовая цена не получена")
+
+    # Также протестируем получение свечей и расчёт RSI
+    print("🧪 Тестируем получение свечей...")
+    test_rsi, _, _, _ = get_rsi_and_bars()
+    if test_rsi is not None:
+        print(f"✅ Тестовый RSI получен: {test_rsi:.2f}")
+    else:
+        print("❌ Тестовый RSI не получен")
 
     print("✅ Бот готов, запускаем поллинг...")
     app.run_polling(drop_pending_updates=True)
