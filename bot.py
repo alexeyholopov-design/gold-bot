@@ -33,7 +33,7 @@ TIMEFRAME = "15m"
 LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 
-# === Правильный символ для BingX (золото XAUT-USDT) ===
+# === Правильные символы для BingX (золото) ===
 SYMBOLS_TO_TRY = ["XAUT-USDT"]
 
 def get_current_price():
@@ -43,6 +43,7 @@ def get_current_price():
             params = {"symbol": symbol}
             response = requests.get(url, params=params, timeout=5)
             if response.status_code != 200:
+                print(f"❌ HTTP {response.status_code} для {symbol}")
                 continue
             data = response.json()
             if data.get("code") == 0:
@@ -56,6 +57,7 @@ def get_current_price():
     print("❌ Ни один символ не подошёл для цены")
     return None
 
+# === Функция get_klines с подробным логированием ===
 def get_klines(symbol=None, interval="15m", limit=100):
     if symbol is None:
         for sym in SYMBOLS_TO_TRY:
@@ -68,6 +70,11 @@ def get_klines(symbol=None, interval="15m", limit=100):
                 data = response.json()
                 if data.get("code") == 0:
                     candles = data["data"]
+                    print(f"🔍 Получено свечей для {sym}: {len(candles)}")
+                    if len(candles) == 0:
+                        continue
+                    print(f"🔍 Первые 3 свечи: {candles[:3]}")
+                    print(f"🔍 Последние 3 свечи: {candles[-3:]}")
                     df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
                     df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
                     print(f"✅ Kline получены для {sym}, строк: {len(df)}")
@@ -88,6 +95,11 @@ def get_klines(symbol=None, interval="15m", limit=100):
             data = response.json()
             if data.get("code") == 0:
                 candles = data["data"]
+                print(f"🔍 Получено свечей для {symbol}: {len(candles)}")
+                if len(candles) == 0:
+                    return None
+                print(f"🔍 Первые 3 свечи: {candles[:3]}")
+                print(f"🔍 Последние 3 свечи: {candles[-3:]}")
                 df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
                 df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
                 return df
@@ -95,20 +107,26 @@ def get_klines(symbol=None, interval="15m", limit=100):
             print(f"❌ Ошибка Kline с {symbol}: {e}")
         return None
 
+# === Функция get_rsi_and_bars с подробным логированием ===
 def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
     for attempt in range(retries):
         try:
             df = get_klines(symbol=ticker_symbol, interval=TIMEFRAME, limit=LOOKBACK)
             if df is None or len(df) < 2:
+                print(f"❌ Недостаточно данных для расчёта RSI (получено {len(df) if df is not None else 0})")
                 time.sleep(base_delay * (attempt + 1))
                 continue
 
+            print(f"🔍 Размер df для RSI: {len(df)}")
             close = df['Close']
+            print(f"🔍 Цены закрытия (последние 5): {close.tail(5).tolist()}")
+
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
+            print(f"🔍 RSI (последние 5): {rsi.tail(5).tolist()}")
 
             current_rsi = rsi.iloc[-1]
             prev_rsi = rsi.iloc[-2] if len(rsi) > 1 else current_rsi
@@ -121,6 +139,8 @@ def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
             return current_rsi, prev_rsi, high, low
         except Exception as e:
             print(f"Ошибка (попытка {attempt+1}): {e}")
+            import traceback
+            traceback.print_exc()
             time.sleep(base_delay * (attempt + 1))
     return None, None, None, None
 
@@ -271,6 +291,15 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("status", status))
+
+    # === ТЕСТОВЫЙ ЗАПРОС ПРИ СТАРТЕ ===
+    print("🧪 Тестируем подключение к BingX...")
+    test_price = get_current_price()
+    if test_price:
+        print(f"✅ Тестовая цена получена: ${test_price:.2f}")
+    else:
+        print("❌ Тестовая цена не получена")
+
     print("✅ Бот готов, запускаем поллинг...")
     app.run_polling(drop_pending_updates=True)
 
