@@ -11,7 +11,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
-# === ТОКЕН (вставлен прямо в код) ===
 TOKEN = "8538708990:AAFC3rk1Z82IP5q5DJCsg2bU9z70uvFBalI"
 
 app_flask = Flask(__name__)
@@ -30,55 +29,73 @@ last_levels = None
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
-TIMEFRAME = "15m"   # для BingX формат "15m"
+TIMEFRAME = "15m"
 LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 
-# === Функции для работы с BingX (бессрочный фьючерс GOLD-USDT) ===
+# === Правильные символы для BingX ===
+SYMBOLS_TO_TRY = ["XAUTUSDT", "XAUUSDT", "GOLD-USDT"]
+
 def get_current_price():
-    try:
-        url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
-        params = {"symbol": "GOLD-USDT"}
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code != 200:
-            print(f"❌ HTTP ошибка: {response.status_code}")
-            return None
-        data = response.json()
-        if data.get("code") == 0:
-            price = float(data["data"]["price"])
-            print(f"💰 BingX GOLD-USDT: ${price:.2f}")
-            return price
-        else:
-            print(f"❌ Ошибка BingX: {data.get('msg')}")
-            return None
-    except Exception as e:
-        print(f"❌ Исключение в get_current_price: {e}")
+    for symbol in SYMBOLS_TO_TRY:
+        try:
+            url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
+            params = {"symbol": symbol}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code != 200:
+                continue
+            data = response.json()
+            if data.get("code") == 0:
+                price = float(data["data"]["price"])
+                print(f"💰 BingX {symbol}: ${price:.2f}")
+                return price
+            else:
+                print(f"❌ Символ {symbol} не работает: {data.get('msg')}")
+        except Exception as e:
+            print(f"❌ Ошибка с {symbol}: {e}")
+    print("❌ Ни один символ не подошёл для цены")
+    return None
+
+def get_klines(symbol=None, interval="15m", limit=100):
+    if symbol is None:
+        for sym in SYMBOLS_TO_TRY:
+            try:
+                url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
+                params = {"symbol": sym, "interval": interval, "limit": limit}
+                response = requests.get(url, params=params, timeout=5)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                if data.get("code") == 0:
+                    candles = data["data"]
+                    df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                    df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
+                    print(f"✅ Kline получены для {sym}, строк: {len(df)}")
+                    return df
+                else:
+                    print(f"❌ Kline для {sym} не работает: {data.get('msg')}")
+            except Exception as e:
+                print(f"❌ Ошибка Kline с {sym}: {e}")
+        print("❌ Ни один символ не подошёл для Klines")
+        return None
+    else:
+        try:
+            url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
+            params = {"symbol": symbol, "interval": interval, "limit": limit}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            if data.get("code") == 0:
+                candles = data["data"]
+                df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
+                return df
+        except Exception as e:
+            print(f"❌ Ошибка Kline с {symbol}: {e}")
         return None
 
-def get_klines(symbol="GOLD-USDT", interval="15m", limit=100):
-    try:
-        url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code != 200:
-            print(f"❌ HTTP ошибка Kline: {response.status_code}")
-            return None
-        data = response.json()
-        if data.get("code") == 0:
-            candles = data["data"]  # список массивов [timestamp, open, high, low, close, volume]
-            # Преобразуем в DataFrame
-            df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-            df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
-            print(f"✅ Kline получены, строк: {len(df)}")
-            return df
-        else:
-            print(f"❌ Ошибка Kline BingX: {data.get('msg')}")
-            return None
-    except Exception as e:
-        print(f"❌ Исключение в get_klines: {e}")
-        return None
-
-def get_rsi_and_bars(ticker_symbol="GOLD-USDT", retries=3, base_delay=5):
+def get_rsi_and_bars(ticker_symbol=None, retries=3, base_delay=5):
     for attempt in range(retries):
         try:
             df = get_klines(symbol=ticker_symbol, interval=TIMEFRAME, limit=LOOKBACK)
@@ -158,7 +175,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         "👋 Бот торговых сигналов запущен!\n"
-        "Анализирую золото (GOLD-USDT фьючерс) с BingX на 15-минутных свечах.\n"
+        "Анализирую золото (XAUTUSDT) с BingX на 15-минутных свечах.\n"
         "Сигналы:\n"
         "📈 BUY  – когда RSI выходит из зоны перепроданности (<30)\n"
         "📉 SELL – когда RSI выходит из зоны перекупленности (>70)\n\n"
@@ -178,7 +195,7 @@ async def gold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_rsi, prev_rsi, _, _ = get_rsi_and_bars()
     if price is not None and current_rsi is not None:
         signal_text = last_signal if last_signal else "Нет сигнала"
-        msg = f"💰 Золото (GOLD-USDT): ${price:.2f}\n📊 RSI (14): {current_rsi:.1f}\n📌 Последний сигнал: {signal_text}"
+        msg = f"💰 Золото (XAUTUSDT): ${price:.2f}\n📊 RSI (14): {current_rsi:.1f}\n📌 Последний сигнал: {signal_text}"
         if last_levels and last_signal:
             msg += f"\n\n--- Уровни (последний сигнал {last_signal}) ---"
             msg += f"\nВход: ${last_levels['price']:.2f}"
@@ -226,7 +243,7 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
     current_rsi, _, _, _ = get_rsi_and_bars()
     if price is not None and current_rsi is not None:
         msg = f"📊 ПЛАНОВЫЙ ОТЧЁТ (15 мин)\n"
-        msg += f"💰 Золото (GOLD-USDT): ${price:.2f}\n"
+        msg += f"💰 Золото (XAUTUSDT): ${price:.2f}\n"
         msg += f"📊 RSI (14): {current_rsi:.1f}\n"
         msg += f"📌 Последний сигнал: {last_signal if last_signal else 'Нет сигнала'}"
         if last_levels and last_signal:
