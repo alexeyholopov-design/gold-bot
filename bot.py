@@ -11,11 +11,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time
 
-# === НОВЫЙ ТОКЕН (вставьте сюда ваш, полученный от @BotFather) ===
+# === ТОКЕН (вставлен прямо в код) ===
 TOKEN = "8538708990:AAFC3rk1Z82IP5q5DJCsg2bU9z70uvFBalI"
-
-if not TOKEN:
-    raise ValueError("TOKEN environment variable not set")
 
 app_flask = Flask(__name__)
 
@@ -33,82 +30,55 @@ last_levels = None
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
-TIMEFRAME = "15"
+TIMEFRAME = "15m"   # для BingX формат "15m"
 LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 
-# === Функции для работы с Bybit (спот XAUTUSDT) ===
+# === Функции для работы с BingX (бессрочный фьючерс GOLD-USDT) ===
 def get_current_price():
     try:
-        url = "https://api.bybit.com/v5/market/tickers"
-        params = {"category": "spot", "symbol": "XAUTUSDT"}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.bybit.com/"
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
+        params = {"symbol": "GOLD-USDT"}
+        response = requests.get(url, params=params, timeout=10)
         if response.status_code != 200:
-            print(f"HTTP error: {response.status_code}")
+            print(f"❌ HTTP ошибка: {response.status_code}")
             return None
         data = response.json()
-        if data["retCode"] == 0:
-            price = float(data["result"]["list"][0]["lastPrice"])
-            print(f"💰 Bybit XAUTUSDT: ${price:.2f}")
+        if data.get("code") == 0:
+            price = float(data["data"]["price"])
+            print(f"💰 BingX GOLD-USDT: ${price:.2f}")
             return price
         else:
-            print(f"Ошибка Bybit: {data['retMsg']}")
+            print(f"❌ Ошибка BingX: {data.get('msg')}")
             return None
     except Exception as e:
-        print(f"Ошибка запроса к Bybit: {e}")
+        print(f"❌ Исключение в get_current_price: {e}")
         return None
 
-def get_klines(symbol="XAUTUSDT", interval="15", limit=100):
+def get_klines(symbol="GOLD-USDT", interval="15m", limit=100):
     try:
-        url = "https://api.bybit.com/v5/market/kline"
-        params = {"category": "spot", "symbol": symbol, "interval": interval, "limit": limit}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.bybit.com/"
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        response = requests.get(url, params=params, timeout=10)
         if response.status_code != 200:
-            print(f"HTTP error Kline: {response.status_code}")
+            print(f"❌ HTTP ошибка Kline: {response.status_code}")
             return None
         data = response.json()
-        if data["retCode"] == 0:
-            candles = data["result"]["list"]
-            df = pd.DataFrame(candles, columns=["Open", "High", "Low", "Close", "Volume", "Turnover", "Timestamp"])
-            df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
-            return df
-        else:
-            print(f"Ошибка Kline Bybit: {data['retMsg']}")
-            return None
-    except Exception as e:
-        print(f"Ошибка запроса Kline к Bybit: {e}")
-        return None
-        data = response.json()
-        if data["retCode"] == 0:
-            candles = data["result"]["list"]
-            df = pd.DataFrame(candles, columns=["Open", "High", "Low", "Close", "Volume", "Turnover", "Timestamp"])
+        if data.get("code") == 0:
+            candles = data["data"]  # список массивов [timestamp, open, high, low, close, volume]
+            # Преобразуем в DataFrame
+            df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
             df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
             print(f"✅ Kline получены, строк: {len(df)}")
             return df
         else:
-            print(f"❌ Ошибка Kline Bybit: {data['retMsg']}")
+            print(f"❌ Ошибка Kline BingX: {data.get('msg')}")
             return None
     except Exception as e:
         print(f"❌ Исключение в get_klines: {e}")
-        import traceback
-        traceback.print_exc()
         return None
 
-def get_rsi_and_bars(ticker_symbol="XAUTUSDT", retries=3, base_delay=5):
+def get_rsi_and_bars(ticker_symbol="GOLD-USDT", retries=3, base_delay=5):
     for attempt in range(retries):
         try:
             df = get_klines(symbol=ticker_symbol, interval=TIMEFRAME, limit=LOOKBACK)
@@ -188,7 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         "👋 Бот торговых сигналов запущен!\n"
-        "Анализирую золото (XAUTUSDT спот) с Bybit на 15-минутных свечах.\n"
+        "Анализирую золото (GOLD-USDT фьючерс) с BingX на 15-минутных свечах.\n"
         "Сигналы:\n"
         "📈 BUY  – когда RSI выходит из зоны перепроданности (<30)\n"
         "📉 SELL – когда RSI выходит из зоны перекупленности (>70)\n\n"
@@ -208,7 +178,7 @@ async def gold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_rsi, prev_rsi, _, _ = get_rsi_and_bars()
     if price is not None and current_rsi is not None:
         signal_text = last_signal if last_signal else "Нет сигнала"
-        msg = f"💰 Золото (XAUTUSDT): ${price:.2f}\n📊 RSI (14): {current_rsi:.1f}\n📌 Последний сигнал: {signal_text}"
+        msg = f"💰 Золото (GOLD-USDT): ${price:.2f}\n📊 RSI (14): {current_rsi:.1f}\n📌 Последний сигнал: {signal_text}"
         if last_levels and last_signal:
             msg += f"\n\n--- Уровни (последний сигнал {last_signal}) ---"
             msg += f"\nВход: ${last_levels['price']:.2f}"
@@ -256,7 +226,7 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
     current_rsi, _, _, _ = get_rsi_and_bars()
     if price is not None and current_rsi is not None:
         msg = f"📊 ПЛАНОВЫЙ ОТЧЁТ (15 мин)\n"
-        msg += f"💰 Золото (XAUTUSDT): ${price:.2f}\n"
+        msg += f"💰 Золото (GOLD-USDT): ${price:.2f}\n"
         msg += f"📊 RSI (14): {current_rsi:.1f}\n"
         msg += f"📌 Последний сигнал: {last_signal if last_signal else 'Нет сигнала'}"
         if last_levels and last_signal:
@@ -281,15 +251,6 @@ def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
 def run_bot():
     print("🤖 Бот запускается...")
     app = Application.builder().token(TOKEN).build()
-    
-    # Принудительный сброс вебхука и удаление висящих обновлений
-    try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
-        print("✅ Вебхук сброшен, pending updates удалены")
-    except Exception as e:
-        print(f"⚠️ Не удалось сбросить вебхук: {e}")
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("status", status))
