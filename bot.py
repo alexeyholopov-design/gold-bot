@@ -39,7 +39,7 @@ gigachat_token = None
 gigachat_token_expires = 0
 
 # === Хранилище новостного фона ===
-news_sentiment = {}  # {asset: "текст анализа"}
+news_sentiment = {}
 LAST_NEWS_UPDATE = 0
 NEWS_UPDATE_INTERVAL = 3600  # 1 час
 
@@ -83,6 +83,20 @@ SL_MULT = 1.2
 TP1_MULT = 1.5
 TP2_MULT = 2.0
 TP3_MULT = 3.0
+
+def safe_float(value, default=0.0):
+    """Безопасно преобразует значение в float."""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_format(value, format_str=":.2f"):
+    """Форматирует число, если оно корректно."""
+    try:
+        return f"{safe_float(value):{format_str}}"
+    except:
+        return str(value)
 
 def get_signal_stars(signal_type):
     if signal_type == "fast_ema":
@@ -160,7 +174,6 @@ async def ask_gigachat(prompt):
 
 # === Функции новостного анализа ===
 def fetch_news(asset):
-    """Получает новости из RSS-лент для актива."""
     rss_urls = {
         "GOLD": "https://ru.investing.com/rss/news_295.rss",
         "BTC": "https://cointelegraph.com/rss",
@@ -198,27 +211,34 @@ async def analyze_news_with_gigachat(asset, news_text):
 
 async def update_news_sentiment():
     global news_sentiment
-    print("📰 Обновление новостного фона...")
-    for asset in ASSETS:
-        news_text = fetch_news(asset)
-        if news_text:
-            analysis = await analyze_news_with_gigachat(asset, news_text)
-            news_sentiment[asset] = analysis
-            print(f"📰 {asset}: {analysis[:100]}...")
-        else:
-            news_sentiment[asset] = "Новостей не найдено."
-    print("✅ Новостной фон обновлён")
+    try:
+        print("📰 Обновление новостного фона...")
+        for asset in ASSETS:
+            news_text = fetch_news(asset)
+            if news_text:
+                analysis = await analyze_news_with_gigachat(asset, news_text)
+                news_sentiment[asset] = analysis
+                print(f"📰 {asset}: {analysis[:100]}...")
+            else:
+                news_sentiment[asset] = "Новостей не найдено."
+        print("✅ Новостной фон обновлён")
+    except Exception as e:
+        print(f"❌ Ошибка в update_news_sentiment: {e}")
 
-# === РАСШИРЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА (с новостным фоном) ===
+# === РАСШИРЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА (с новостным фоном и безопасным форматированием) ===
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
                           atr=None, volume=None, higher_trend=None):
     if not GIGACHAT_AUTH_KEY:
         return None
     direction = "покупку" if signal == "BUY" else "продажу"
-    rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
-    ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}" if (ema_fast is not None and ema_slow is not None) else ""
-    atr_text = f"ATR: {atr:.2f}" if atr is not None else ""
-    volume_text = f"Объём: {volume:.0f}" if volume is not None else ""
+    # Безопасное форматирование
+    price_str = safe_format(price, ":.2f")
+    rsi_str = safe_format(rsi, ":.1f") if rsi is not None else "N/A"
+    ema_text = ""
+    if ema_fast is not None and ema_slow is not None:
+        ema_text = f"EMA20: {safe_format(ema_fast)}, EMA50: {safe_format(ema_slow)}"
+    atr_str = safe_format(atr, ":.2f") if atr is not None else ""
+    volume_str = safe_format(volume, ":.0f") if volume is not None else ""
     trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
     news_text = news_sentiment.get(asset_name, "Новостной фон не оценён.")
     
@@ -227,11 +247,11 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
 
 Актив: {asset_name}
 Тип сигнала: {signal_type} (сигнал на {direction})
-Цена: ${price:.2f}
-RSI (14): {rsi_text}
+Цена: ${price_str}
+RSI (14): {rsi_str}
 {ema_text}
-{atr_text}
-{volume_text}
+{atr_str}
+{volume_str}
 {trend_text}
 Новостной фон (последние часы): {news_text}
 
@@ -552,7 +572,7 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
             if is_buy and price <= levels['sl']:
                 levels['sl_hit'] = True
                 update_signal_event(asset_name, interval, signal_type, "sl", price)
-                msg = f"❌ Стоп-лосс сработал по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}"
+                msg = f"❌ Стоп-лосс сработал по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nSL: ${safe_format(levels['sl'])}"
                 await send_to_chat(FakeContext(bot), msg)
                 return
     if not levels.get('sl_hit', False):
@@ -560,19 +580,19 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
             if is_buy and price >= levels['tp1']:
                 levels['tp1_hit'] = True
                 update_signal_event(asset_name, interval, signal_type, "tp1", price)
-                msg = f"✅ TP1 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}"
+                msg = f"✅ TP1 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP1: ${safe_format(levels['tp1'])}"
                 await send_to_chat(FakeContext(bot), msg)
         if levels.get('tp2') is not None and not levels.get('tp2_hit', False):
             if is_buy and price >= levels['tp2']:
                 levels['tp2_hit'] = True
                 update_signal_event(asset_name, interval, signal_type, "tp2", price)
-                msg = f"✅ TP2 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}"
+                msg = f"✅ TP2 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP2: ${safe_format(levels['tp2'])}"
                 await send_to_chat(FakeContext(bot), msg)
         if levels.get('tp3') is not None and not levels.get('tp3_hit', False):
             if is_buy and price >= levels['tp3']:
                 levels['tp3_hit'] = True
                 update_signal_event(asset_name, interval, signal_type, "tp3", price)
-                msg = f"✅ TP3 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f}"
+                msg = f"✅ TP3 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP3: ${safe_format(levels['tp3'])}"
                 await send_to_chat(FakeContext(bot), msg)
 
 class FakeContext:
@@ -622,7 +642,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             direction = "покупку" if tf_data["rsi_signal"] == "BUY" else "продажу"
             msg += f"🔹 Сигнал на {direction} по RSI"
             if lv:
-                msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f}"
+                msg += f" | Вход: ${safe_format(lv['price'])} | SL: ${safe_format(lv['sl'])} | TP1: ${safe_format(lv['tp1'])} | TP2: ${safe_format(lv['tp2'])}"
             msg += "\n"
         else:
             msg += "🔹 RSI: Нет\n"
@@ -631,7 +651,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             direction = "покупку" if tf_data["ema_signal"] == "BUY" else "продажу"
             msg += f"🔸 Сигнал на {direction} по EMA (20/50)"
             if lv:
-                msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f}"
+                msg += f" | Вход: ${safe_format(lv['price'])} | SL: ${safe_format(lv['sl'])} | TP1: ${safe_format(lv['tp1'])} | TP2: ${safe_format(lv['tp2'])}"
             msg += "\n"
         else:
             msg += "🔸 EMA (20/50): Нет\n"
@@ -640,7 +660,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             direction = "покупку" if tf_data["combined_signal"] == "BUY" else "продажу"
             msg += f"🔹 Сигнал на {direction} по RSI+EMA"
             if lv:
-                msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f}"
+                msg += f" | Вход: ${safe_format(lv['price'])} | SL: ${safe_format(lv['sl'])} | TP1: ${safe_format(lv['tp1'])} | TP2: ${safe_format(lv['tp2'])}"
             msg += "\n"
         else:
             msg += "🔹 RSI+EMA: Нет\n"
@@ -649,7 +669,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             direction = "покупку" if tf_data["fast_ema_signal"] == "BUY" else "продажу"
             msg += f"⭐ Сигнал на {direction} по FAST EMA (3/10)"
             if lv:
-                msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f} | TP3: {lv['tp3']:.2f}"
+                msg += f" | Вход: ${safe_format(lv['price'])} | SL: ${safe_format(lv['sl'])} | TP1: ${safe_format(lv['tp1'])} | TP2: ${safe_format(lv['tp2'])} | TP3: ${safe_format(lv['tp3'])}"
             msg += "\n"
         else:
             msg += "⭐ FAST EMA: Нет\n"
@@ -731,7 +751,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if price is None:
         await update.message.reply_text("❌ Не удалось получить цену")
         return
-    # Ищем сигнал сначала на 15m, потом на 5m
     signal = None
     signal_type = None
     tf = None
@@ -765,7 +784,6 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not signal:
         await update.message.reply_text("На данный момент нет активного сигнала для AI-анализа")
         return
-    # Получаем RSI, ATR, объём, тренд на старшем ТФ
     if not rsi:
         rsi, _, _, _ = get_rsi_and_bars(symbol, tf or "15m")
     atr_val = get_atr_value(symbol, tf or "15m")
@@ -903,10 +921,9 @@ async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
         price = get_current_price(symbol)
         rsi, _, _, _ = get_rsi_and_bars(symbol, "15m")
         if price is not None and rsi is not None:
-            msg += f"**{name}** ({symbol}): ${price:.2f}  |  RSI(14): {rsi:.1f}\n"
+            msg += f"**{name}** ({symbol}): ${safe_format(price)}  |  RSI(14): {safe_format(rsi, ':.1f')}\n"
         else:
             msg += f"**{name}**: данные недоступны\n"
-    # Добавляем новостной фон
     msg += "\n📰 **Новостной фон (последние часы):**\n"
     for asset_name in ASSETS:
         sentiment = news_sentiment.get(asset_name, "Нет данных")
@@ -928,18 +945,16 @@ async def send_current_signals(context):
              combined_signal, combined_levels,
              fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(name, tf)
             tf_data = asset["data"][tf]
-            # RSI
             if rsi_signal and rsi_levels and rsi_signal != tf_data.get("rsi_sent"):
                 lv = rsi_levels
                 stars = get_signal_stars("rsi")
                 direction = "покупку" if rsi_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по RSI для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f}\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}"
-                # Собираем допданные для AI
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
+                msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}"
                 atr_val = get_atr_value(symbol, tf)
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -951,20 +966,18 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
-            # EMA
             if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
                 direction = "покупку" if ema_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по EMA (20/50) для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
-                msg += f"📊 ATR: {lv['atr']:.2f}\n"
-                msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])} (ATR×{SL_MULT})\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
+                msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
+                msg += f"📊 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                # AI
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -977,19 +990,17 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["ema_sent"] = ema_signal
                 record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
-            # Combined
             if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
                 stars = get_signal_stars("combined")
                 direction = "покупку" if combined_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по RSI+EMA для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f}\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}\n"
-                msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
-                # AI
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
+                msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}\n"
+                msg += f"🔹 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}"
                 atr_val = None
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1002,20 +1013,18 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
-            # FAST
             if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
                 direction = "покупку" if fast_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по FAST EMA (3/10) для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
-                msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
-                msg += f"📊 ATR: {lv['atr']:.2f}\n"
-                msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
-                # AI
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])} (ATR×{SL_MULT})\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
+                msg += f"🎯 TP3: ${safe_format(lv['tp3'])} (ATR×{TP3_MULT})\n"
+                msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
+                msg += f"📊 EMA3: {safe_format(cur_fast3)}, EMA10: {safe_format(cur_slow10)}"
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1051,12 +1060,11 @@ async def check_and_send_signal(bot):
                 stars = get_signal_stars("rsi")
                 direction = "покупку" if rsi_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по RSI для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f}\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}"
-                # AI
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
+                msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}"
                 atr_val = get_atr_value(symbol, tf)
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1074,14 +1082,13 @@ async def check_and_send_signal(bot):
                 stars = get_signal_stars("ema")
                 direction = "покупку" if ema_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по EMA (20/50) для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
-                msg += f"📊 ATR: {lv['atr']:.2f}\n"
-                msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])} (ATR×{SL_MULT})\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
+                msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
+                msg += f"📊 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                # AI
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1100,13 +1107,12 @@ async def check_and_send_signal(bot):
                 stars = get_signal_stars("combined")
                 direction = "покупку" if combined_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по RSI+EMA для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f}\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}\n"
-                msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
-                # AI
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
+                msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}\n"
+                msg += f"🔹 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}"
                 atr_val = None
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1125,14 +1131,13 @@ async def check_and_send_signal(bot):
                 stars = get_signal_stars("fast_ema")
                 direction = "покупку" if fast_signal == "BUY" else "продажу"
                 msg = f"{stars} 📢 Сигнал на {direction} по FAST EMA (3/10) для {name} ({symbol}) [{tf}]\n"
-                msg += f"💰 Вход: ${lv['price']:.2f}\n"
-                msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
-                msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
-                msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
-                msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
-                msg += f"📊 ATR: {lv['atr']:.2f}\n"
-                msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
-                # AI
+                msg += f"💰 Вход: ${safe_format(lv['price'])}\n"
+                msg += f"🛑 SL: ${safe_format(lv['sl'])} (ATR×{SL_MULT})\n"
+                msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
+                msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
+                msg += f"🎯 TP3: ${safe_format(lv['tp3'])} (ATR×{TP3_MULT})\n"
+                msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
+                msg += f"📊 EMA3: {safe_format(cur_fast3)}, EMA10: {safe_format(cur_slow10)}"
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1191,7 +1196,6 @@ async def scheduler_loop(app):
 # === Запуск ===
 def run_bot():
     print("🤖 Бот запускается...")
-    # Диагностика ключа GigaChat
     if GIGACHAT_AUTH_KEY:
         key_preview = GIGACHAT_AUTH_KEY[:10] + "..." if len(GIGACHAT_AUTH_KEY) > 10 else GIGACHAT_AUTH_KEY
         print(f"🧠 GigaChat AI включён (ключ: {key_preview})")
