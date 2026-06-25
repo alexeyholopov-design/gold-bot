@@ -206,7 +206,7 @@ async def analyze_news_with_gigachat(asset, news_text):
 """
     return await ask_gigachat(prompt)
 
-async def update_news_sentiment():
+async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
     global news_sentiment
     try:
         print("📰 Обновление новостного фона...")
@@ -951,7 +951,6 @@ async def send_current_signals(context):
                 msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
                 msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}"
-                # AI
                 atr_val = get_atr_value(symbol, tf)
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1035,12 +1034,11 @@ async def send_current_signals(context):
                 tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
-# === Автоматическая проверка (исправлено форматирование) ===
-async def check_and_send_signal(context):
+# === Автоматическая проверка (через job_queue) ===
+async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
         return
-    # context уже содержит bot
     for name in ASSETS:
         asset = ASSETS[name]
         symbol = asset["symbol"]
@@ -1175,14 +1173,14 @@ async def start_scheduler(app):
     job_queue.run_daily(weekly_report_task, time=dt_time(hour=18, minute=0), days=(6,))
     # Утренний обзор в 10:00 МСК
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0), days=tuple(range(7)))
-    # Обновление новостей каждые 3600 секунд
+    # Обновление новостей каждые 3600 секунд (с передачей context)
     job_queue.run_repeating(update_news_sentiment, interval=NEWS_UPDATE_INTERVAL, first=30)
     print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 21:00, по воскресеньям в 18:00, утренний обзор в 10:00)")
 
-# === Запуск ===
 async def post_init(app):
     await start_scheduler(app)
 
+# === Запуск ===
 def run_bot():
     print("🤖 Бот запускается...")
     if GIGACHAT_AUTH_KEY:
