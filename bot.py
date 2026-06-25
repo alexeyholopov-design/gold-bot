@@ -109,7 +109,7 @@ async def get_gigachat_token():
             result = response.json()
             gigachat_token = result.get("access_token")
             expires_at = result.get("expires_at", time.time() + 1800)
-            gigachat_token_expires = expires_at - 60  # запас 1 минута
+            gigachat_token_expires = expires_at - 60
             print("✅ Токен GigaChat получен")
             return gigachat_token
         else:
@@ -152,18 +152,23 @@ async def ask_gigachat(prompt):
         print(f"❌ Исключение при запросе к GigaChat: {e}")
         return None
 
+# === ИСПРАВЛЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА ===
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None):
     if not GIGACHAT_AUTH_KEY:
         return None
     direction = "покупку" if signal == "BUY" else "продажу"
-    ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}" if ema_fast and ema_slow else ""
+    # Проверяем, что RSI не None
+    rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
+    ema_text = ""
+    if ema_fast is not None and ema_slow is not None:
+        ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}"
     prompt = f"""
 Ты – опытный трейдер по золоту и криптовалютам. Оцени сигнал.
 
 Актив: {asset_name}
 Тип сигнала: {signal_type} (сигнал на {direction})
 Цена: ${price:.2f}
-RSI (14): {rsi:.1f}
+RSI (14): {rsi_text}
 {ema_text}
 
 Ответь кратко, строго в формате:
@@ -659,22 +664,50 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if price is None:
         await update.message.reply_text("❌ Не удалось получить цену")
         return
-    # Берём данные для 15m (или 5m – можно выбрать)
-    tf_data = asset["data"]["15m"]
-    rsi, _, _, _ = get_rsi_and_bars(symbol, "15m")
-    if rsi is None:
-        await update.message.reply_text("❌ Не удалось получить RSI")
-        return
-    # Получаем последний сигнал и EMA
-    ema_cross, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, "15m", EMA_FAST, EMA_SLOW)
-    signal = tf_data["rsi_signal"] if tf_data["rsi_signal"] else (tf_data["ema_signal"] if tf_data["ema_signal"] else tf_data["combined_signal"] if tf_data["combined_signal"] else tf_data["fast_ema_signal"])
-    signal_type = "rsi" if tf_data["rsi_signal"] else "ema" if tf_data["ema_signal"] else "combined" if tf_data["combined_signal"] else "fast_ema" if tf_data["fast_ema_signal"] else "нет сигнала"
+    # Ищем сигнал сначала на 15m, потом на 5m
+    signal = None
+    signal_type = None
+    tf = None
+    rsi = None
+    cur_fast = None
+    cur_slow = None
+    for check_tf in ["15m", "5m"]:
+        tf_data = asset["data"][check_tf]
+        if tf_data["rsi_signal"]:
+            signal = tf_data["rsi_signal"]
+            signal_type = "RSI"
+            tf = check_tf
+            rsi = tf_data["rsi_levels"]["rsi"] if tf_data["rsi_levels"] else None
+            break
+        elif tf_data["ema_signal"]:
+            signal = tf_data["ema_signal"]
+            signal_type = "EMA"
+            tf = check_tf
+            break
+        elif tf_data["combined_signal"]:
+            signal = tf_data["combined_signal"]
+            signal_type = "Combined"
+            tf = check_tf
+            rsi = tf_data["combined_levels"]["rsi"] if tf_data["combined_levels"] else None
+            break
+        elif tf_data["fast_ema_signal"]:
+            signal = tf_data["fast_ema_signal"]
+            signal_type = "FAST EMA"
+            tf = check_tf
+            break
     if not signal:
         await update.message.reply_text("На данный момент нет активного сигнала для AI-анализа")
         return
+    # Получаем RSI и EMA значения
+    if not rsi:
+        rsi, _, _, _ = get_rsi_and_bars(symbol, tf or "15m")
+    ema_cross, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf or "15m", EMA_FAST, EMA_SLOW)
+    if not cur_fast or not cur_slow:
+        cur_fast = None
+        cur_slow = None
     analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi, cur_fast, cur_slow)
     if analysis:
-        await update.message.reply_text(f"🤖 AI-анализ для {asset_name}:\n\n{analysis}")
+        await update.message.reply_text(f"🤖 AI-анализ для {asset_name} ({tf}):\n\n{analysis}")
     else:
         await update.message.reply_text("❌ Не удалось получить AI-анализ. Проверьте настройки GigaChat.")
 
@@ -817,10 +850,8 @@ async def send_current_signals(context):
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
-                # AI-анализ для RSI
                 ai_text = await get_ai_analysis(name, "RSI", rsi_signal, lv['price'], lv['rsi'])
-                if ai_text:
-                    msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
+                if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
@@ -837,10 +868,8 @@ async def send_current_signals(context):
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                # AI-анализ для EMA
-                ai_text = await get_ai_analysis(name, "EMA", ema_signal, lv['price'], lv.get('rsi'), cur_fast, cur_slow)
-                if ai_text:
-                    msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
+                ai_text = await get_ai_analysis(name, "EMA", ema_signal, lv['price'], None, cur_fast, cur_slow)
+                if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["ema_sent"] = ema_signal
                 record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
@@ -856,10 +885,8 @@ async def send_current_signals(context):
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
-                # AI-анализ для Combined
                 ai_text = await get_ai_analysis(name, "RSI+EMA", combined_signal, lv['price'], lv['rsi'], cur_fast, cur_slow)
-                if ai_text:
-                    msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
+                if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
@@ -876,10 +903,8 @@ async def send_current_signals(context):
                 msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
-                # AI-анализ для FAST
                 ai_text = await get_ai_analysis(name, "FAST EMA", fast_signal, lv['price'], None, cur_fast3, cur_slow10)
-                if ai_text:
-                    msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
+                if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
@@ -1002,6 +1027,13 @@ async def scheduler_loop(app):
 # === Запуск ===
 def run_bot():
     print("🤖 Бот запускается...")
+    # Диагностика ключа GigaChat
+    if GIGACHAT_AUTH_KEY:
+        key_preview = GIGACHAT_AUTH_KEY[:10] + "..." if len(GIGACHAT_AUTH_KEY) > 10 else GIGACHAT_AUTH_KEY
+        print(f"🧠 GigaChat AI включён (ключ: {key_preview})")
+    else:
+        print("⚠️ GigaChat AI отключён (ключ не задан или пустой)")
+
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
@@ -1024,10 +1056,6 @@ def run_bot():
         print(f"📢 Будет дублировать сообщения в канал {CHANNEL_ID}")
     else:
         print("📢 Канал не задан")
-    if GIGACHAT_AUTH_KEY:
-        print("🧠 GigaChat AI включён")
-    else:
-        print("⚠️ GigaChat AI отключён (ключ не задан)")
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
