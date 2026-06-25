@@ -363,7 +363,7 @@ def check_signal(asset_name, interval):
             tf_data["tp1_hit"] = tf_data["tp2_hit"] = tf_data["tp3_hit"] = tf_data["sl_hit"] = False
             tf_data["tp1_notified"] = tf_data["tp2_notified"] = tf_data["tp3_notified"] = tf_data["sl_notified"] = False
         else:
-            ema_signal = None  # если ATR не получен, не отправляем
+            ema_signal = None
     else:
         ema_signal = None
 
@@ -487,6 +487,7 @@ def check_signal(asset_name, interval):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
+    # Планировщик уже запущен автоматически, но мы всё равно можем отправить текущие сигналы
     await send_current_signals(context)
     await update.message.reply_text(
         "👋 Бот запущен!\n"
@@ -739,7 +740,7 @@ async def weekly_report_task(context: ContextTypes.DEFAULT_TYPE):
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
-# === Принудительная отправка текущих сигналов при старте ===
+# === Принудительная отправка текущих сигналов ===
 async def send_current_signals(context):
     print("📤 Принудительная отправка текущих сигналов...")
     if CHANNEL_ID is None and chat_id is None:
@@ -815,8 +816,8 @@ async def send_current_signals(context):
                 tf_data["last_fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
-# === Автоматическая проверка ===
-async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
+# === Автоматическая проверка (фоновый цикл) ===
+async def check_and_send_signal(context):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
         return
@@ -856,7 +857,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
-                msg += f"📊 ATR: ${lv['atr']:.2f}\n"
+                msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
                 await send_to_chat(context, msg)
@@ -890,7 +891,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
                 msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
-                msg += f"📊 ATR: ${lv['atr']:.2f}\n"
+                msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
                 await send_to_chat(context, msg)
                 tf_data["last_fast_ema_sent"] = fast_signal
@@ -915,17 +916,21 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     await send_to_chat(context, msg)
                     tf_data["tp3_notified"] = True
 
-# === Планировщик ===
-def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
-    if context.job_queue is None:
-        print("⚠️ JobQueue не доступен. Установите apscheduler.")
-        return
-    for job in context.job_queue.jobs():
-        job.schedule_removal()
-    context.job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
-    context.job_queue.run_daily(daily_report_task, time=dt_time(hour=22, minute=0), days=tuple(range(7)))
-    context.job_queue.run_daily(weekly_report_task, time=dt_time(hour=19, minute=0), days=(6,))
-    print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 22:00, по воскресеньям в 19:00)")
+# === Фоновый цикл (без job_queue) ===
+async def scheduler_loop(app):
+    await asyncio.sleep(10)  # ждём 10 секунд перед первым запуском
+    print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
+    while True:
+        try:
+            # Создаём фейковый контекст с bot
+            class FakeContext:
+                def __init__(self, bot):
+                    self.bot = bot
+            context = FakeContext(app.bot)
+            await check_and_send_signal(context)
+        except Exception as e:
+            print(f"❌ Ошибка в планировщике: {e}")
+        await asyncio.sleep(60)
 
 # === Запуск ===
 def run_bot():
@@ -950,14 +955,12 @@ def run_bot():
         print(f"📢 Будет дублировать сообщения в канал {CHANNEL_ID}")
     else:
         print("📢 Канал не задан")
+
+    # Запускаем фоновый планировщик
+    loop = asyncio.get_event_loop()
+    loop.create_task(scheduler_loop(app))
+
     print("✅ Бот готов, запускаем поллинг...")
-
-    # Запускаем планировщик внутри обработчика start, но чтобы не ждать /start, можно сразу вызвать
-    # Создадим контекст и вызовем start_scheduler. Для этого нужно получить app.
-    # Но проще всего использовать обработчик /start. Поэтому пользователь должен отправить /start один раз.
-    # Если хотите автоматический запуск без /start – используйте фоновый цикл (был в предыдущей версии).
-    # Пока оставляем как есть.
-
     app.run_polling(drop_pending_updates=True)
 
 def main():
