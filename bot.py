@@ -733,7 +733,7 @@ async def weekly_report_task(context: ContextTypes.DEFAULT_TYPE):
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
-# === Принудительная отправка текущих сигналов ===
+# === Принудительная отправка ===
 async def send_current_signals(context):
     print("📤 Принудительная отправка текущих сигналов...")
     if CHANNEL_ID is None and chat_id is None:
@@ -761,7 +761,7 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["last_rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
-            # EMA (20/50)
+            # EMA
             if ema_signal and ema_levels and ema_signal != tf_data.get("last_ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
@@ -792,7 +792,7 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["last_combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
-            # FAST EMA
+            # FAST
             if fast_signal and fast_levels and fast_signal != tf_data.get("last_fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
@@ -809,11 +809,16 @@ async def send_current_signals(context):
                 tf_data["last_fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
-# === Автоматическая проверка (используется в job_queue) ===
-async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
+# === Автоматическая проверка (используется в цикле) ===
+async def check_and_send_signal(bot):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
         return
+    # Создаём фейковый контекст для send_to_chat
+    class FakeContext:
+        def __init__(self, bot):
+            self.bot = bot
+    context = FakeContext(bot)
     for name in ASSETS:
         asset = ASSETS[name]
         symbol = asset["symbol"]
@@ -840,7 +845,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 tf_data["last_rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- EMA (20/50) ---
+            # --- EMA ---
             if ema_signal and ema_levels and ema_signal != tf_data.get("last_ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
@@ -873,7 +878,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 tf_data["last_combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- FAST EMA ---
+            # --- FAST ---
             if fast_signal and fast_levels and fast_signal != tf_data.get("last_fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
@@ -909,27 +914,21 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     await send_to_chat(context, msg)
                     tf_data["tp3_notified"] = True
 
-# === Планировщик через job_queue ===
-async def start_scheduler(app):
-    job_queue = app.job_queue
-    if job_queue is None:
-        print("⚠️ JobQueue не доступен. Установите apscheduler.")
-        return
-    for job in job_queue.jobs():
-        job.schedule_removal()
-    job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
-    job_queue.run_daily(daily_report_task, time=dt_time(hour=22, minute=0), days=tuple(range(7)))
-    job_queue.run_daily(weekly_report_task, time=dt_time(hour=19, minute=0), days=(6,))
-    print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 22:00, по воскресеньям в 19:00)")
-
-async def post_init(app):
-    """Вызывается после инициализации приложения, до запуска поллинга."""
-    await start_scheduler(app)
+# === Фоновый цикл (без job_queue) ===
+async def scheduler_loop(app):
+    await asyncio.sleep(10)
+    print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
+    while True:
+        try:
+            await check_and_send_signal(app.bot)
+        except Exception as e:
+            print(f"❌ Ошибка в планировщике: {e}")
+        await asyncio.sleep(60)
 
 # === Запуск ===
 def run_bot():
     print("🤖 Бот запускается...")
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("btc", btc))
@@ -949,6 +948,11 @@ def run_bot():
         print(f"📢 Будет дублировать сообщения в канал {CHANNEL_ID}")
     else:
         print("📢 Канал не задан")
+
+    # Запускаем фоновый цикл (без job_queue)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(scheduler_loop(app))
 
     print("✅ Бот готов, запускаем поллинг...")
     app.run_polling(drop_pending_updates=True)
