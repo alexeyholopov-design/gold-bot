@@ -20,7 +20,12 @@ if not TOKEN:
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
 # === GigaChat настройки ===
+# Попытка прочитать ключ из переменной окружения
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
+
+# Если ключ не найден, можно вставить его прямо здесь для теста (раскомментируйте и вставьте)
+# GIGACHAT_AUTH_KEY = "ВАШ_КЛЮЧ_СЮДА"  # <-- ВСТАВЬТЕ КЛЮЧ СЮДА ДЛЯ ТЕСТА
+
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
 
 app_flask = Flask(__name__)
@@ -119,6 +124,44 @@ async def get_gigachat_token():
         print(f"❌ Исключение при получении токена GigaChat: {e}")
         return None
 
+# === РАСШИРЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА (с ATR, объёмом, трендом) ===
+async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
+                          atr=None, volume=None, higher_trend=None):
+    if not GIGACHAT_AUTH_KEY:
+        return None
+    direction = "покупку" if signal == "BUY" else "продажу"
+    rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
+    ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}" if (ema_fast is not None and ema_slow is not None) else ""
+    atr_text = f"ATR: {atr:.2f}" if atr is not None else ""
+    volume_text = f"Объём: {volume:.0f}" if volume is not None else ""
+    trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
+    
+    prompt = f"""
+Ты – опытный трейдер по золоту и криптовалютам. Оцени сигнал.
+
+Актив: {asset_name}
+Тип сигнала: {signal_type} (сигнал на {direction})
+Цена: ${price:.2f}
+RSI (14): {rsi_text}
+{ema_text}
+{atr_text}
+{volume_text}
+{trend_text}
+
+Ответь кратко, строго в формате:
+1. Оценка ситуации (одно предложение).
+2. Риск (одно предложение).
+3. Рекомендация: BUY/SELL/HOLD с пояснением.
+"""
+    try:
+        analysis = await ask_gigachat(prompt)
+        if analysis and len(analysis) > 300:
+            analysis = analysis[:300] + "..."
+        return analysis
+    except Exception as e:
+        print(f"❌ Ошибка AI: {e}")
+        return None
+
 async def ask_gigachat(prompt):
     token = await get_gigachat_token()
     if not token:
@@ -150,39 +193,6 @@ async def ask_gigachat(prompt):
             return None
     except Exception as e:
         print(f"❌ Исключение при запросе к GigaChat: {e}")
-        return None
-
-# === ИСПРАВЛЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА ===
-async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None):
-    if not GIGACHAT_AUTH_KEY:
-        return None
-    direction = "покупку" if signal == "BUY" else "продажу"
-    # Проверяем, что RSI не None
-    rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
-    ema_text = ""
-    if ema_fast is not None and ema_slow is not None:
-        ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}"
-    prompt = f"""
-Ты – опытный трейдер по золоту и криптовалютам. Оцени сигнал.
-
-Актив: {asset_name}
-Тип сигнала: {signal_type} (сигнал на {direction})
-Цена: ${price:.2f}
-RSI (14): {rsi_text}
-{ema_text}
-
-Ответь кратко, строго в формате:
-1. Оценка ситуации (одно предложение).
-2. Риск (одно предложение).
-3. Рекомендация: BUY/SELL/HOLD с пояснением.
-"""
-    try:
-        analysis = await ask_gigachat(prompt)
-        if analysis and len(analysis) > 300:
-            analysis = analysis[:300] + "..."
-        return analysis
-    except Exception as e:
-        print(f"❌ Ошибка AI: {e}")
         return None
 
 async def send_to_chat(context, text):
@@ -355,7 +365,7 @@ def calculate_atr_levels(price, atr, signal_type):
         tp3 = price - atr * TP3_MULT
     return sl, tp1, tp2, tp3
 
-def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1=None, tp2=None, tp3=None):
+def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1=None, tp2=None, tp3=None, ai_analysis=None):
     entry = {
         "timestamp": datetime.now(),
         "asset": asset_name,
@@ -371,7 +381,8 @@ def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1
         "tp2_hit": False,
         "tp3_hit": False,
         "sl_hit": False,
-        "closed": False
+        "closed": False,
+        "ai_analysis": ai_analysis  # сохраняем AI-ответ
     }
     signal_history.append(entry)
 
@@ -698,14 +709,18 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not signal:
         await update.message.reply_text("На данный момент нет активного сигнала для AI-анализа")
         return
-    # Получаем RSI и EMA значения
+    # Получаем RSI, ATR, объём, тренд на старшем ТФ
     if not rsi:
         rsi, _, _, _ = get_rsi_and_bars(symbol, tf or "15m")
-    ema_cross, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf or "15m", EMA_FAST, EMA_SLOW)
-    if not cur_fast or not cur_slow:
-        cur_fast = None
-        cur_slow = None
-    analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi, cur_fast, cur_slow)
+    atr_val = get_atr_value(symbol, tf or "15m")
+    # Объём (берём последний из klines)
+    df = get_klines(symbol, interval=tf or "15m", limit=10)
+    volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+    # Тренд на старшем ТФ
+    higher_tf = "1h" if tf == "15m" else "15m"
+    higher_trend = get_trend_direction(symbol, tf, higher_tf)
+    analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi, cur_fast, cur_slow,
+                                     atr=atr_val, volume=volume, higher_trend=higher_trend)
     if analysis:
         await update.message.reply_text(f"🤖 AI-анализ для {asset_name} ({tf}):\n\n{analysis}")
     else:
@@ -850,11 +865,18 @@ async def send_current_signals(context):
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
-                ai_text = await get_ai_analysis(name, "RSI", rsi_signal, lv['price'], lv['rsi'])
+                # Собираем допданные для AI
+                atr_val = get_atr_value(symbol, tf)
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "RSI", rsi_signal, lv['price'], lv['rsi'],
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
-                record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+                record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
             # EMA
             if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
@@ -868,11 +890,19 @@ async def send_current_signals(context):
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                ai_text = await get_ai_analysis(name, "EMA", ema_signal, lv['price'], None, cur_fast, cur_slow)
+                # AI
+                atr_val = lv.get('atr')
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "EMA", ema_signal, lv['price'], None,
+                                                ema_fast=cur_fast, ema_slow=cur_slow,
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["ema_sent"] = ema_signal
-                record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+                record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
             # Combined
             if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
@@ -885,11 +915,19 @@ async def send_current_signals(context):
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
-                ai_text = await get_ai_analysis(name, "RSI+EMA", combined_signal, lv['price'], lv['rsi'], cur_fast, cur_slow)
+                # AI
+                atr_val = None  # для combined используем ATR из уровней? нет, отдельно
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "RSI+EMA", combined_signal, lv['price'], lv['rsi'],
+                                                ema_fast=cur_fast, ema_slow=cur_slow,
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
-                record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+                record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
             # FAST
             if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
@@ -903,11 +941,19 @@ async def send_current_signals(context):
                 msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
-                ai_text = await get_ai_analysis(name, "FAST EMA", fast_signal, lv['price'], None, cur_fast3, cur_slow10)
+                # AI
+                atr_val = lv.get('atr')
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "FAST EMA", fast_signal, lv['price'], None,
+                                                ema_fast=cur_fast3, ema_slow=cur_slow10,
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["fast_ema_sent"] = fast_signal
-                record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
+                record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
 # === Автоматическая проверка ===
 async def check_and_send_signal(bot):
@@ -936,11 +982,18 @@ async def check_and_send_signal(bot):
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
-                ai_text = await get_ai_analysis(name, "RSI", rsi_signal, lv['price'], lv['rsi'])
+                # AI
+                atr_val = get_atr_value(symbol, tf)
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "RSI", rsi_signal, lv['price'], lv['rsi'],
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
-                record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+                record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
 
             if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
@@ -954,11 +1007,19 @@ async def check_and_send_signal(bot):
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                ai_text = await get_ai_analysis(name, "EMA", ema_signal, lv['price'], None, cur_fast, cur_slow)
+                # AI
+                atr_val = lv.get('atr')
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "EMA", ema_signal, lv['price'], None,
+                                                ema_fast=cur_fast, ema_slow=cur_slow,
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["ema_sent"] = ema_signal
-                record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+                record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
 
             if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
@@ -971,11 +1032,19 @@ async def check_and_send_signal(bot):
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
-                ai_text = await get_ai_analysis(name, "RSI+EMA", combined_signal, lv['price'], lv['rsi'], cur_fast, cur_slow)
+                # AI
+                atr_val = None
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "RSI+EMA", combined_signal, lv['price'], lv['rsi'],
+                                                ema_fast=cur_fast, ema_slow=cur_slow,
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
-                record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+                record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
 
             if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
@@ -989,11 +1058,19 @@ async def check_and_send_signal(bot):
                 msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
-                ai_text = await get_ai_analysis(name, "FAST EMA", fast_signal, lv['price'], None, cur_fast3, cur_slow10)
+                # AI
+                atr_val = lv.get('atr')
+                df = get_klines(symbol, interval=tf, limit=10)
+                volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
+                higher_tf = "1h" if tf == "15m" else "15m"
+                higher_trend = get_trend_direction(symbol, tf, higher_tf)
+                ai_text = await get_ai_analysis(name, "FAST EMA", fast_signal, lv['price'], None,
+                                                ema_fast=cur_fast3, ema_slow=cur_slow10,
+                                                atr=atr_val, volume=volume, higher_trend=higher_trend)
                 if ai_text: msg += f"\n\n🤖 AI-анализ:\n{ai_text}"
                 await send_to_chat(context, msg)
                 tf_data["fast_ema_sent"] = fast_signal
-                record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
+                record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
             if tf_data.get("rsi_levels"):
                 await check_and_notify_levels(bot, name, tf, "rsi", tf_data["rsi_levels"], tf_data.get("rsi_sent"))
@@ -1032,7 +1109,7 @@ def run_bot():
         key_preview = GIGACHAT_AUTH_KEY[:10] + "..." if len(GIGACHAT_AUTH_KEY) > 10 else GIGACHAT_AUTH_KEY
         print(f"🧠 GigaChat AI включён (ключ: {key_preview})")
     else:
-        print("⚠️ GigaChat AI отключён (ключ не задан или пустой)")
+        print("⚠️ GigaChat AI отключён (ключ не задан или пустой). Если ключ есть, проверьте переменную окружения GIGACHAT_AUTH_KEY.")
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
