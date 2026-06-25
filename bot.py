@@ -9,9 +9,14 @@ import numpy as np
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from datetime import time as dt_time
+from datetime import time as dt_time, datetime, timedelta
 
-TOKEN = "8538708990:AAFC3rk1Z82IP5q5DJCsg2bU9z70uvFBalI"
+TOKEN = os.environ.get('TOKEN')
+if not TOKEN:
+    raise ValueError("TOKEN environment variable not set")
+
+# === ID канала (если задан) ===
+CHANNEL_ID = os.environ.get('CHANNEL_ID')  # например, "-1001234567890"
 
 app_flask = Flask(__name__)
 
@@ -22,12 +27,14 @@ def health_check():
 def run_flask():
     app_flask.run(host='0.0.0.0', port=10000)
 
-chat_id = None
+chat_id = None  # личный чат пользователя (устанавливается через /start)
+
+# === История сигналов ===
+signal_history = []
 
 # === Конфигурация активов и таймфреймов ===
 TIMEFRAMES = ["5m", "15m"]
 
-# Для каждого актива и каждого ТФ храним все данные
 ASSETS = {
     "GOLD": {"symbol": "XAUT-USDT", "data": {}},
     "BTC":  {"symbol": "BTC-USDT",  "data": {}},
@@ -35,7 +42,6 @@ ASSETS = {
     "SOL":  {"symbol": "SOL-USDT",  "data": {}},
 }
 
-# Инициализируем структуру для каждого ТФ
 for asset in ASSETS:
     for tf in TIMEFRAMES:
         ASSETS[asset]["data"][tf] = {
@@ -48,7 +54,6 @@ for asset in ASSETS:
             "last_combined_signal": None,
             "last_combined_levels": None,
             "last_combined_sent": None,
-            # Для отслеживания TP/SL
             "entry_price": None,
             "sl": None,
             "tp1": None,
@@ -56,10 +61,12 @@ for asset in ASSETS:
             "tp1_hit": False,
             "tp2_hit": False,
             "sl_hit": False,
-            "signal_type": None,   # 'rsi' или 'combined' (только для них есть уровни)
+            "signal_type": None,
+            "tp1_notified": False,
+            "tp2_notified": False,
+            "sl_notified": False,
         }
 
-# Параметры индикаторов (общие)
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
@@ -67,6 +74,14 @@ LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 EMA_FAST = 20
 EMA_SLOW = 50
+
+# === Функции отправки сообщений (в личку + канал) ===
+async def send_to_chat(context, text):
+    """Отправляет сообщение в личный чат (если есть) и в канал (если задан)."""
+    if chat_id is not None:
+        await context.bot.send_message(chat_id=chat_id, text=text)
+    if CHANNEL_ID is not None:
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
 
 # === Функции работы с BingX ===
 def get_current_price(symbol):
@@ -195,6 +210,41 @@ def calculate_levels(price, high, low, signal_type):
         tp2 = price - 2 * (sl - price)
     return sl, tp1, tp2
 
+# === Функции истории ===
+def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1=None, tp2=None):
+    entry = {
+        "timestamp": datetime.now(),
+        "asset": asset_name,
+        "tf": tf,
+        "type": signal_type,
+        "signal": signal,
+        "entry_price": price,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp1_hit": False,
+        "tp2_hit": False,
+        "sl_hit": False,
+        "closed": False
+    }
+    signal_history.append(entry)
+    print(f"📝 Записано событие: {asset_name} {tf} {signal_type} {signal} @ {price}")
+
+def update_signal_event(asset_name, tf, event_type, value):
+    for entry in reversed(signal_history):
+        if entry["asset"] == asset_name and entry["tf"] == tf and not entry["closed"]:
+            if event_type == "tp1":
+                entry["tp1_hit"] = True
+                entry["closed"] = True
+            elif event_type == "tp2":
+                entry["tp2_hit"] = True
+                entry["closed"] = True
+            elif event_type == "sl":
+                entry["sl_hit"] = True
+                entry["closed"] = True
+            print(f"📝 Обновлено событие: {asset_name} {tf} {event_type} = {value}")
+            break
+
 def check_signal(asset_name, interval):
     asset = ASSETS[asset_name]
     symbol = asset["symbol"]
@@ -223,7 +273,6 @@ def check_signal(asset_name, interval):
             }
             tf_data["last_rsi_signal"] = rsi_signal
             tf_data["last_rsi_levels"] = rsi_levels
-            # Сбрасываем флаги выполнения при новом сигнале
             tf_data["entry_price"] = price
             tf_data["sl"] = sl
             tf_data["tp1"] = tp1
@@ -232,6 +281,9 @@ def check_signal(asset_name, interval):
             tf_data["tp2_hit"] = False
             tf_data["sl_hit"] = False
             tf_data["signal_type"] = "rsi"
+            tf_data["tp1_notified"] = False
+            tf_data["tp2_notified"] = False
+            tf_data["sl_notified"] = False
 
     # --- EMA ---
     ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, interval)
@@ -241,7 +293,7 @@ def check_signal(asset_name, interval):
     else:
         ema_signal = None
 
-    # --- Combined (RSI + EMA) ---
+    # --- Combined ---
     combined_signal = None
     combined_levels = None
     if rsi_signal:
@@ -263,8 +315,7 @@ def check_signal(asset_name, interval):
                 }
             tf_data["last_combined_signal"] = combined_signal
             tf_data["last_combined_levels"] = combined_levels
-            # Обновляем уровни и для комбинированного
-            if not rsi_levels:  # если RSI не дал уровней, берём из combined
+            if not rsi_levels:
                 tf_data["entry_price"] = price
                 tf_data["sl"] = sl
                 tf_data["tp1"] = tp1
@@ -273,35 +324,41 @@ def check_signal(asset_name, interval):
                 tf_data["tp2_hit"] = False
                 tf_data["sl_hit"] = False
                 tf_data["signal_type"] = "combined"
+                tf_data["tp1_notified"] = False
+                tf_data["tp2_notified"] = False
+                tf_data["sl_notified"] = False
         else:
             combined_signal = None
 
-    # --- Проверка достижения TP/SL (если есть активный сигнал) ---
+    # --- TP/SL проверка ---
     if tf_data["entry_price"] is not None and tf_data["signal_type"]:
-        # Проверяем только если есть открытая позиция (сигнал был, но не закрыт)
-        # Используем текущую цену для проверки
         if tf_data["sl"] is not None and not tf_data["sl_hit"]:
             if tf_data["signal_type"] == "BUY" and price <= tf_data["sl"]:
                 tf_data["sl_hit"] = True
-                # Отправим уведомление отдельно
+                update_signal_event(asset_name, interval, "sl", price)
             elif tf_data["signal_type"] == "SELL" and price >= tf_data["sl"]:
                 tf_data["sl_hit"] = True
+                update_signal_event(asset_name, interval, "sl", price)
         if tf_data["tp1"] is not None and not tf_data["tp1_hit"]:
             if tf_data["signal_type"] == "BUY" and price >= tf_data["tp1"]:
                 tf_data["tp1_hit"] = True
+                update_signal_event(asset_name, interval, "tp1", price)
             elif tf_data["signal_type"] == "SELL" and price <= tf_data["tp1"]:
                 tf_data["tp1_hit"] = True
+                update_signal_event(asset_name, interval, "tp1", price)
         if tf_data["tp2"] is not None and not tf_data["tp2_hit"]:
             if tf_data["signal_type"] == "BUY" and price >= tf_data["tp2"]:
                 tf_data["tp2_hit"] = True
+                update_signal_event(asset_name, interval, "tp2", price)
             elif tf_data["signal_type"] == "SELL" and price <= tf_data["tp2"]:
                 tf_data["tp2_hit"] = True
+                update_signal_event(asset_name, interval, "tp2", price)
 
     return (rsi_signal, rsi_levels, current_rsi,
             ema_signal, price, cur_fast, cur_slow,
             combined_signal, combined_levels, interval)
 
-# === Команды (обновлены с учётом ТФ) ===
+# === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
@@ -313,13 +370,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 RSI – пересечение 30/70 (с уровнями SL/TP1/TP2)\n"
         "🔸 EMA – кроссовер EMA20/EMA50 (без уровней)\n"
         "🔹 RSI+EMA – комбинированный (RSI + тренд по EMA) – с уровнями\n\n"
-        "Уведомления о достижении TP1, TP2 и SL приходят автоматически.\n\n"
+        "Уведомления о достижении TP1, TP2 и SL приходят автоматически.\n"
+        "Ежедневный отчёт в 22:00, воскресный отчёт в 19:00.\n\n"
         "Команды:\n"
         "/gold, /btc, /eth, /sol – цена, RSI и все сигналы для обоих ТФ\n"
         "/crypto – сводка по всем активам (последние сигналы)\n"
         "/status – последние сигналы по GOLD (оба ТФ)"
     )
-    start_scheduler(context)
 
 async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_name):
     global chat_id
@@ -336,7 +393,6 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
         return
 
     for tf in TIMEFRAMES:
-        # Получаем сигналы для этого ТФ
         (rsi_signal, rsi_levels, current_rsi,
          ema_signal, _, cur_fast, cur_slow,
          combined_signal, combined_levels, _) = check_signal(asset_name, tf)
@@ -344,7 +400,6 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
         
         msg += f"⏱ {tf}\n"
         msg += f"📊 RSI: {current_rsi:.1f}\n" if current_rsi else "📊 RSI: —\n"
-        # RSI
         if tf_data["last_rsi_signal"]:
             lv = tf_data["last_rsi_levels"]
             msg += f"🔹 RSI: {tf_data['last_rsi_signal']}"
@@ -353,12 +408,10 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             msg += "\n"
         else:
             msg += "🔹 RSI: Нет\n"
-        # EMA
         if tf_data["last_ema_signal"]:
             msg += f"🔸 EMA: {tf_data['last_ema_signal']} (EMA{EMA_FAST}: {cur_fast:.2f}, EMA{EMA_SLOW}: {cur_slow:.2f})\n"
         else:
             msg += "🔸 EMA: Нет\n"
-        # Combined
         if tf_data["last_combined_signal"]:
             lv = tf_data["last_combined_levels"]
             msg += f"🔹 RSI+EMA: {tf_data['last_combined_signal']}"
@@ -367,7 +420,6 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             msg += "\n"
         else:
             msg += "🔹 RSI+EMA: Нет\n"
-        # Статус TP/SL
         if tf_data["entry_price"] is not None:
             msg += f"📌 Позиция: {tf_data['signal_type']} | Вход: {tf_data['entry_price']:.2f}"
             if tf_data["sl_hit"]:
@@ -426,11 +478,105 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "\n"
     await update.message.reply_text(msg)
 
-# === Автоматическая проверка и отправка сигналов + уведомления о TP/SL ===
+# === Генерация отчётов ===
+async def generate_daily_report():
+    now = datetime.now()
+    yesterday = now - timedelta(days=1)
+    events = [e for e in signal_history if e["timestamp"] >= yesterday]
+    if not events:
+        return "📊 За последние 24 часа сигналов не было."
+
+    stats = {}
+    for e in events:
+        key = (e["asset"], e["tf"])
+        if key not in stats:
+            stats[key] = {
+                "rsi": {"total": 0, "tp1": 0, "tp2": 0, "sl": 0},
+                "ema": {"total": 0, "tp1": 0, "tp2": 0, "sl": 0},
+                "combined": {"total": 0, "tp1": 0, "tp2": 0, "sl": 0}
+            }
+        typ = e["type"]
+        stats[key][typ]["total"] += 1
+        if e["tp1_hit"]:
+            stats[key][typ]["tp1"] += 1
+        if e["tp2_hit"]:
+            stats[key][typ]["tp2"] += 1
+        if e["sl_hit"]:
+            stats[key][typ]["sl"] += 1
+
+    lines = ["📊 **Ежедневный отчёт за {}**".format(now.strftime("%d.%m.%Y"))]
+    lines.append("")
+    for (asset, tf), data in stats.items():
+        lines.append(f"**{asset}** ({tf}):")
+        for sig_type, vals in data.items():
+            total = vals["total"]
+            if total == 0:
+                continue
+            tp1 = vals["tp1"]
+            tp2 = vals["tp2"]
+            sl = vals["sl"]
+            closed = tp1 + tp2 + sl
+            success_rate = (tp1 + tp2) / closed * 100 if closed > 0 else 0
+            lines.append(f"  {sig_type.upper()}: {total} сигн. | TP1: {tp1} | TP2: {tp2} | SL: {sl} | Успешность: {success_rate:.1f}%")
+        lines.append("")
+    return "\n".join(lines)
+
+async def generate_weekly_report():
+    now = datetime.now()
+    week_ago = now - timedelta(days=7)
+    events = [e for e in signal_history if e["timestamp"] >= week_ago]
+    if not events:
+        return "📊 За последнюю неделю сигналов не было."
+
+    stats = {}
+    for e in events:
+        key = (e["asset"], e["tf"])
+        if key not in stats:
+            stats[key] = {
+                "rsi": {"total": 0, "tp1": 0, "tp2": 0, "sl": 0},
+                "ema": {"total": 0, "tp1": 0, "tp2": 0, "sl": 0},
+                "combined": {"total": 0, "tp1": 0, "tp2": 0, "sl": 0}
+            }
+        typ = e["type"]
+        stats[key][typ]["total"] += 1
+        if e["tp1_hit"]:
+            stats[key][typ]["tp1"] += 1
+        if e["tp2_hit"]:
+            stats[key][typ]["tp2"] += 1
+        if e["sl_hit"]:
+            stats[key][typ]["sl"] += 1
+
+    lines = ["📊 **Воскресный отчёт за неделю ({} - {})**".format(
+        (now - timedelta(days=7)).strftime("%d.%m"), now.strftime("%d.%m.%Y"))]
+    lines.append("")
+    for (asset, tf), data in stats.items():
+        lines.append(f"**{asset}** ({tf}):")
+        for sig_type, vals in data.items():
+            total = vals["total"]
+            if total == 0:
+                continue
+            tp1 = vals["tp1"]
+            tp2 = vals["tp2"]
+            sl = vals["sl"]
+            closed = tp1 + tp2 + sl
+            success_rate = (tp1 + tp2) / closed * 100 if closed > 0 else 0
+            lines.append(f"  {sig_type.upper()}: {total} сигн. | TP1: {tp1} | TP2: {tp2} | SL: {sl} | Успешность: {success_rate:.1f}%")
+        lines.append("")
+    return "\n".join(lines)
+
+# === Задачи отчётов ===
+async def daily_report_task(context: ContextTypes.DEFAULT_TYPE):
+    report = await generate_daily_report()
+    await send_to_chat(context, report)
+
+async def weekly_report_task(context: ContextTypes.DEFAULT_TYPE):
+    report = await generate_weekly_report()
+    await send_to_chat(context, report)
+
+# === Автоматическая проверка сигналов ===
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
-    global chat_id
-    if chat_id is None:
-        return
+    if chat_id is None and CHANNEL_ID is None:
+        return  # некуда отправлять
     for name in ASSETS:
         asset = ASSETS[name]
         symbol = asset["symbol"]
@@ -441,7 +587,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
              combined_signal, combined_levels, _) = check_signal(name, tf)
             tf_data = asset["data"][tf]
 
-            # --- Отправка новых сигналов ---
+            # --- RSI ---
             if rsi_signal and rsi_levels and rsi_signal != tf_data.get("last_rsi_sent"):
                 lv = rsi_levels
                 emoji = "📈" if rsi_signal == "BUY" else "📉"
@@ -451,18 +597,22 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await send_to_chat(context, msg)
                 tf_data["last_rsi_sent"] = rsi_signal
+                record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
+            # --- EMA ---
             if ema_signal and ema_signal != tf_data.get("last_ema_sent"):
                 emoji = "📈" if ema_signal == "BUY" else "📉"
                 msg = f"{emoji} EMA СИГНАЛ НА {name} ({symbol}) [{tf}]\n"
                 msg += f"💰 Цена: ${price:.2f}\n"
                 msg += f"📊 EMA{EMA_FAST}: {cur_fast:.2f}, EMA{EMA_SLOW}: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await send_to_chat(context, msg)
                 tf_data["last_ema_sent"] = ema_signal
+                record_signal_event(name, tf, "ema", ema_signal, price)
 
+            # --- Combined ---
             if combined_signal and combined_levels and combined_signal != tf_data.get("last_combined_sent"):
                 lv = combined_levels
                 emoji = "📈" if combined_signal == "BUY" else "📉"
@@ -473,54 +623,24 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
                 msg += f"\n🔹 EMA{EMA_FAST}: {cur_fast:.2f}, EMA{EMA_SLOW}: {cur_slow:.2f}"
-                await context.bot.send_message(chat_id=chat_id, text=msg)
+                await send_to_chat(context, msg)
                 tf_data["last_combined_sent"] = combined_signal
+                record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- Уведомления о TP/SL (срабатывают один раз) ---
+            # --- TP/SL уведомления ---
             if tf_data["entry_price"] is not None and tf_data["signal_type"]:
-                # Проверяем только если есть открытая позиция (entry_price задан)
                 if tf_data["sl_hit"] and not tf_data.get("sl_notified"):
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"❌ СТОП-ЛОСС СРАБОТАЛ НА {name} [{tf}]\n"
-                             f"Вход: ${tf_data['entry_price']:.2f}\n"
-                             f"SL: ${tf_data['sl']:.2f}"
-                    )
+                    msg = f"❌ СТОП-ЛОСС СРАБОТАЛ НА {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nSL: ${tf_data['sl']:.2f}"
+                    await send_to_chat(context, msg)
                     tf_data["sl_notified"] = True
                 if tf_data["tp1_hit"] and not tf_data.get("tp1_notified"):
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ TP1 ДОСТИГНУТ НА {name} [{tf}]\n"
-                             f"Вход: ${tf_data['entry_price']:.2f}\n"
-                             f"TP1: ${tf_data['tp1']:.2f}"
-                    )
+                    msg = f"✅ TP1 ДОСТИГНУТ НА {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nTP1: ${tf_data['tp1']:.2f}"
+                    await send_to_chat(context, msg)
                     tf_data["tp1_notified"] = True
                 if tf_data["tp2_hit"] and not tf_data.get("tp2_notified"):
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ TP2 ДОСТИГНУТ НА {name} [{tf}]\n"
-                             f"Вход: ${tf_data['entry_price']:.2f}\n"
-                             f"TP2: ${tf_data['tp2']:.2f}"
-                    )
+                    msg = f"✅ TP2 ДОСТИГНУТ НА {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nTP2: ${tf_data['tp2']:.2f}"
+                    await send_to_chat(context, msg)
                     tf_data["tp2_notified"] = True
-
-# === Плановый отчёт ===
-async def daily_report(context: ContextTypes.DEFAULT_TYPE):
-    global chat_id
-    if chat_id is None:
-        return
-    msg = "📊 ПЛАНОВЫЙ ОТЧЁТ\n\n"
-    for name in ASSETS:
-        asset = ASSETS[name]
-        msg += f"**{name}** ({asset['symbol']})\n"
-        for tf in TIMEFRAMES:
-            tf_data = asset["data"][tf]
-            rsi_sig = tf_data["last_rsi_signal"] or "Нет"
-            ema_sig = tf_data["last_ema_signal"] or "Нет"
-            comb_sig = tf_data["last_combined_signal"] or "Нет"
-            msg += f"  {tf}: RSI={rsi_sig}, EMA={ema_sig}, RSI+EMA={comb_sig}\n"
-        msg += "\n"
-    await context.bot.send_message(chat_id=chat_id, text=msg)
 
 def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
     if context.job_queue is None:
@@ -528,12 +648,13 @@ def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
         return
     for job in context.job_queue.jobs():
         job.schedule_removal()
-    # Проверка каждые 5 минут (для 5-минутных сигналов)
+    # Проверка каждые 5 минут
     context.job_queue.run_repeating(check_and_send_signal, interval=300, first=10)
-    # Ежедневные отчёты
-    context.job_queue.run_daily(daily_report, time=dt_time(hour=12, minute=0), days=tuple(range(7)))
-    context.job_queue.run_daily(daily_report, time=dt_time(hour=18, minute=0), days=tuple(range(7)))
-    print("📅 Планировщик запущен (проверка каждые 5 минут)")
+    # Ежедневный отчёт в 22:00 (каждый день)
+    context.job_queue.run_daily(daily_report_task, time=dt_time(hour=22, minute=0), days=tuple(range(7)))
+    # Воскресный отчёт в 19:00 (только воскресенье, days=6)
+    context.job_queue.run_daily(weekly_report_task, time=dt_time(hour=19, minute=0), days=(6,))
+    print("📅 Планировщик запущен (проверка каждые 5 минут, отчёты: ежедневно в 22:00, по воскресеньям в 19:00)")
 
 def run_bot():
     print("🤖 Бот запускается...")
@@ -553,6 +674,10 @@ def run_bot():
             print(f"✅ {name}: ${price:.2f}")
         else:
             print(f"❌ {name}: не удалось")
+    if CHANNEL_ID:
+        print(f"📢 Будет дублировать сообщения в канал {CHANNEL_ID}")
+    else:
+        print("📢 Канал не задан (только личные сообщения)")
     print("✅ Бот готов, запускаем поллинг...")
     app.run_polling(drop_pending_updates=True)
 
