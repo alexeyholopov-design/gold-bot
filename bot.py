@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import uuid
 import json
+import feedparser
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -20,12 +21,7 @@ if not TOKEN:
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
 # === GigaChat настройки ===
-# Попытка прочитать ключ из переменной окружения
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
-
-# Если ключ не найден, можно вставить его прямо здесь для теста (раскомментируйте и вставьте)
-# GIGACHAT_AUTH_KEY = "ВАШ_КЛЮЧ_СЮДА"  # <-- ВСТАВЬТЕ КЛЮЧ СЮДА ДЛЯ ТЕСТА
-
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
 
 app_flask = Flask(__name__)
@@ -41,6 +37,11 @@ chat_id = None
 signal_history = []
 gigachat_token = None
 gigachat_token_expires = 0
+
+# === Хранилище новостного фона ===
+news_sentiment = {}  # {asset: "текст анализа"}
+LAST_NEWS_UPDATE = 0
+NEWS_UPDATE_INTERVAL = 3600  # 1 час
 
 TIMEFRAMES = ["5m", "15m"]
 
@@ -124,44 +125,6 @@ async def get_gigachat_token():
         print(f"❌ Исключение при получении токена GigaChat: {e}")
         return None
 
-# === РАСШИРЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА (с ATR, объёмом, трендом) ===
-async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
-                          atr=None, volume=None, higher_trend=None):
-    if not GIGACHAT_AUTH_KEY:
-        return None
-    direction = "покупку" if signal == "BUY" else "продажу"
-    rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
-    ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}" if (ema_fast is not None and ema_slow is not None) else ""
-    atr_text = f"ATR: {atr:.2f}" if atr is not None else ""
-    volume_text = f"Объём: {volume:.0f}" if volume is not None else ""
-    trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
-    
-    prompt = f"""
-Ты – опытный трейдер по золоту и криптовалютам. Оцени сигнал.
-
-Актив: {asset_name}
-Тип сигнала: {signal_type} (сигнал на {direction})
-Цена: ${price:.2f}
-RSI (14): {rsi_text}
-{ema_text}
-{atr_text}
-{volume_text}
-{trend_text}
-
-Ответь кратко, строго в формате:
-1. Оценка ситуации (одно предложение).
-2. Риск (одно предложение).
-3. Рекомендация: BUY/SELL/HOLD с пояснением.
-"""
-    try:
-        analysis = await ask_gigachat(prompt)
-        if analysis and len(analysis) > 300:
-            analysis = analysis[:300] + "..."
-        return analysis
-    except Exception as e:
-        print(f"❌ Ошибка AI: {e}")
-        return None
-
 async def ask_gigachat(prompt):
     token = await get_gigachat_token()
     if not token:
@@ -177,7 +140,7 @@ async def ask_gigachat(prompt):
             "model": "GigaChat",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 150,
+            "max_tokens": 200,
             "stream": False
         }
         response = requests.post(url, headers=headers, json=payload, verify=False, timeout=15)
@@ -193,6 +156,97 @@ async def ask_gigachat(prompt):
             return None
     except Exception as e:
         print(f"❌ Исключение при запросе к GigaChat: {e}")
+        return None
+
+# === Функции новостного анализа ===
+def fetch_news(asset):
+    """Получает новости из RSS-лент для актива."""
+    rss_urls = {
+        "GOLD": "https://ru.investing.com/rss/news_295.rss",
+        "BTC": "https://cointelegraph.com/rss",
+        "ETH": "https://cointelegraph.com/rss",
+        "SOL": "https://cointelegraph.com/rss",
+    }
+    url = rss_urls.get(asset)
+    if not url:
+        return ""
+    try:
+        feed = feedparser.parse(url)
+        entries = feed.entries[:10]
+        titles = [entry.title for entry in entries if hasattr(entry, 'title')]
+        if titles:
+            return " ".join(titles)
+        else:
+            return ""
+    except Exception as e:
+        print(f"❌ Ошибка RSS для {asset}: {e}")
+        return ""
+
+async def analyze_news_with_gigachat(asset, news_text):
+    if not news_text:
+        return "Новостей нет."
+    prompt = f"""
+Проанализируй новости по активу {asset} за последние часы. Новости:
+{news_text}
+
+Дай краткую оценку (1–2 предложения):
+- общее настроение (бычье/медвежье/нейтральное)
+- ключевые события
+- влияние на цену в ближайшие часы
+"""
+    return await ask_gigachat(prompt)
+
+async def update_news_sentiment():
+    global news_sentiment
+    print("📰 Обновление новостного фона...")
+    for asset in ASSETS:
+        news_text = fetch_news(asset)
+        if news_text:
+            analysis = await analyze_news_with_gigachat(asset, news_text)
+            news_sentiment[asset] = analysis
+            print(f"📰 {asset}: {analysis[:100]}...")
+        else:
+            news_sentiment[asset] = "Новостей не найдено."
+    print("✅ Новостной фон обновлён")
+
+# === РАСШИРЕННАЯ ФУНКЦИЯ AI-АНАЛИЗА (с новостным фоном) ===
+async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
+                          atr=None, volume=None, higher_trend=None):
+    if not GIGACHAT_AUTH_KEY:
+        return None
+    direction = "покупку" if signal == "BUY" else "продажу"
+    rsi_text = f"{rsi:.1f}" if rsi is not None else "N/A"
+    ema_text = f"EMA20: {ema_fast:.2f}, EMA50: {ema_slow:.2f}" if (ema_fast is not None and ema_slow is not None) else ""
+    atr_text = f"ATR: {atr:.2f}" if atr is not None else ""
+    volume_text = f"Объём: {volume:.0f}" if volume is not None else ""
+    trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
+    news_text = news_sentiment.get(asset_name, "Новостной фон не оценён.")
+    
+    prompt = f"""
+Ты – опытный трейдер по золоту и криптовалютам. Оцени сигнал и учти новостной фон.
+
+Актив: {asset_name}
+Тип сигнала: {signal_type} (сигнал на {direction})
+Цена: ${price:.2f}
+RSI (14): {rsi_text}
+{ema_text}
+{atr_text}
+{volume_text}
+{trend_text}
+Новостной фон (последние часы): {news_text}
+
+Ответь кратко, строго в формате:
+1. Оценка ситуации (одно предложение).
+2. Риск (одно предложение).
+3. Рекомендация: BUY/SELL/HOLD с пояснением.
+"""
+    try:
+        analysis = await ask_gigachat(prompt)
+        if analysis and len(analysis) > 350:
+            analysis = analysis[:350] + "..."
+        return analysis
+    except Exception as e:
+        print(f"❌ Ошибка AI: {e}")
         return None
 
 async def send_to_chat(context, text):
@@ -382,7 +436,7 @@ def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1
         "tp3_hit": False,
         "sl_hit": False,
         "closed": False,
-        "ai_analysis": ai_analysis  # сохраняем AI-ответ
+        "ai_analysis": ai_analysis
     }
     signal_history.append(entry)
 
@@ -538,6 +592,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⭐ FAST EMA (3/10) – быстрый, но частый\n"
         "⭐⭐ RSI или EMA (20/50) – средняя надёжность\n"
         "⭐⭐⭐ RSI+EMA (20/50) – самый сильный\n\n"
+        "📰 Новостной фон обновляется каждый час.\n"
+        "📊 Утренний обзор рынка в 10:00 МСК.\n\n"
         "Команды:\n"
         "/gold, /btc, /eth, /sol – цена и все сигналы\n"
         "/crypto – сводка\n"
@@ -713,10 +769,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rsi:
         rsi, _, _, _ = get_rsi_and_bars(symbol, tf or "15m")
     atr_val = get_atr_value(symbol, tf or "15m")
-    # Объём (берём последний из klines)
     df = get_klines(symbol, interval=tf or "15m", limit=10)
     volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
-    # Тренд на старшем ТФ
     higher_tf = "1h" if tf == "15m" else "15m"
     higher_trend = get_trend_direction(symbol, tf, higher_tf)
     analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi, cur_fast, cur_slow,
@@ -840,6 +894,26 @@ async def weekly_report_task(context: ContextTypes.DEFAULT_TYPE):
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
+# === Утренний обзор (в 10:00 МСК) ===
+async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
+    print("📊 Формирование утреннего обзора...")
+    msg = "🌅 **Утренний обзор рынка**\n\n"
+    for name, asset in ASSETS.items():
+        symbol = asset["symbol"]
+        price = get_current_price(symbol)
+        rsi, _, _, _ = get_rsi_and_bars(symbol, "15m")
+        if price is not None and rsi is not None:
+            msg += f"**{name}** ({symbol}): ${price:.2f}  |  RSI(14): {rsi:.1f}\n"
+        else:
+            msg += f"**{name}**: данные недоступны\n"
+    # Добавляем новостной фон
+    msg += "\n📰 **Новостной фон (последние часы):**\n"
+    for asset_name in ASSETS:
+        sentiment = news_sentiment.get(asset_name, "Нет данных")
+        msg += f"**{asset_name}**: {sentiment}\n"
+    await send_to_chat(context, msg)
+    print("✅ Утренний обзор отправлен")
+
 # === Принудительная отправка текущих сигналов ===
 async def send_current_signals(context):
     print("📤 Принудительная отправка текущих сигналов...")
@@ -916,7 +990,7 @@ async def send_current_signals(context):
                 msg += f"📊 RSI: {lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
                 # AI
-                atr_val = None  # для combined используем ATR из уровней? нет, отдельно
+                atr_val = None
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
                 higher_tf = "1h" if tf == "15m" else "15m"
@@ -1083,19 +1157,32 @@ async def check_and_send_signal(bot):
 
 # === Фоновый цикл ===
 async def scheduler_loop(app):
+    global LAST_NEWS_UPDATE
     await asyncio.sleep(10)
     print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
     last_daily_report = None
     last_weekly_report = None
+    last_morning_report = None
     while True:
         try:
             now = get_moscow_time()
+            # Ежедневный отчёт в 21:00
             if now.hour == 21 and now.minute == 0 and last_daily_report != now.date():
                 await daily_report_task(FakeContext(app.bot))
                 last_daily_report = now.date()
+            # Воскресный отчёт в 18:00
             if now.weekday() == 6 and now.hour == 18 and now.minute == 0 and last_weekly_report != now.date():
                 await weekly_report_task(FakeContext(app.bot))
                 last_weekly_report = now.date()
+            # Утренний обзор в 10:00
+            if now.hour == 10 and now.minute == 0 and last_morning_report != now.date():
+                await send_morning_report(FakeContext(app.bot))
+                last_morning_report = now.date()
+            # Обновление новостного фона раз в час
+            if time.time() - LAST_NEWS_UPDATE > NEWS_UPDATE_INTERVAL:
+                await update_news_sentiment()
+                LAST_NEWS_UPDATE = time.time()
+            # Основная проверка сигналов
             await check_and_send_signal(app.bot)
         except Exception as e:
             print(f"❌ Ошибка в планировщике: {e}")
@@ -1109,7 +1196,7 @@ def run_bot():
         key_preview = GIGACHAT_AUTH_KEY[:10] + "..." if len(GIGACHAT_AUTH_KEY) > 10 else GIGACHAT_AUTH_KEY
         print(f"🧠 GigaChat AI включён (ключ: {key_preview})")
     else:
-        print("⚠️ GigaChat AI отключён (ключ не задан или пустой). Если ключ есть, проверьте переменную окружения GIGACHAT_AUTH_KEY.")
+        print("⚠️ GigaChat AI отключён (ключ не задан или пустой)")
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
