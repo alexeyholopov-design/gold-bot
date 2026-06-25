@@ -224,10 +224,6 @@ def get_atr_value(symbol, interval):
     return atr[-1]
 
 def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50):
-    """
-    Проверяет тренд на старшем таймфрейме.
-    Возвращает: 'UP' если EMA20 > EMA50, 'DOWN' если EMA20 < EMA50, иначе None.
-    """
     df = get_klines(symbol, interval=check_interval, limit=LOOKBACK)
     if df is None or len(df) < slow:
         return None
@@ -350,7 +346,7 @@ def check_signal(asset_name, interval):
     if ema_signal and ema_signal != tf_data["last_ema_signal"]:
         atr = get_atr_value(symbol, interval)
         if atr is not None:
-            sl, tp1, tp2, _ = calculate_atr_levels(price, atr, ema_signal)  # только 2 TP
+            sl, tp1, tp2, _ = calculate_atr_levels(price, atr, ema_signal)
             ema_levels = {'price': price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'atr': atr}
             tf_data["last_ema_signal"] = ema_signal
             tf_data["last_ema_levels"] = ema_levels
@@ -367,7 +363,7 @@ def check_signal(asset_name, interval):
     else:
         ema_signal = None
 
-    # Combined (RSI + EMA)
+    # Combined
     combined_signal = None
     combined_levels = None
     if rsi_signal:
@@ -398,7 +394,6 @@ def check_signal(asset_name, interval):
     # FAST EMA (3/10) + ATR + фильтр тренда
     fast_signal = None
     fast_levels = None
-    # Определяем старший ТФ для фильтра
     if interval == "5m":
         higher_tf = "15m"
     elif interval == "15m":
@@ -408,7 +403,6 @@ def check_signal(asset_name, interval):
 
     fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, interval, EMA_FAST_FAST, EMA_SLOW_FAST)
     if fast_cross:
-        # Проверяем тренд на старшем ТФ
         trend_ok = False
         if higher_tf:
             trend = get_trend_direction(symbol, interval, higher_tf)
@@ -487,7 +481,6 @@ def check_signal(asset_name, interval):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
-    # Планировщик уже запущен автоматически, но мы всё равно можем отправить текущие сигналы
     await send_current_signals(context)
     await update.message.reply_text(
         "👋 Бот запущен!\n"
@@ -816,8 +809,8 @@ async def send_current_signals(context):
                 tf_data["last_fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
-# === Автоматическая проверка (фоновый цикл) ===
-async def check_and_send_signal(context):
+# === Автоматическая проверка (используется в job_queue) ===
+async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
         return
@@ -916,26 +909,27 @@ async def check_and_send_signal(context):
                     await send_to_chat(context, msg)
                     tf_data["tp3_notified"] = True
 
-# === Фоновый цикл (без job_queue) ===
-async def scheduler_loop(app):
-    await asyncio.sleep(10)  # ждём 10 секунд перед первым запуском
-    print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
-    while True:
-        try:
-            # Создаём фейковый контекст с bot
-            class FakeContext:
-                def __init__(self, bot):
-                    self.bot = bot
-            context = FakeContext(app.bot)
-            await check_and_send_signal(context)
-        except Exception as e:
-            print(f"❌ Ошибка в планировщике: {e}")
-        await asyncio.sleep(60)
+# === Планировщик через job_queue ===
+async def start_scheduler(app):
+    job_queue = app.job_queue
+    if job_queue is None:
+        print("⚠️ JobQueue не доступен. Установите apscheduler.")
+        return
+    for job in job_queue.jobs():
+        job.schedule_removal()
+    job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
+    job_queue.run_daily(daily_report_task, time=dt_time(hour=22, minute=0), days=tuple(range(7)))
+    job_queue.run_daily(weekly_report_task, time=dt_time(hour=19, minute=0), days=(6,))
+    print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 22:00, по воскресеньям в 19:00)")
+
+async def post_init(app):
+    """Вызывается после инициализации приложения, до запуска поллинга."""
+    await start_scheduler(app)
 
 # === Запуск ===
 def run_bot():
     print("🤖 Бот запускается...")
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("btc", btc))
@@ -955,10 +949,6 @@ def run_bot():
         print(f"📢 Будет дублировать сообщения в канал {CHANNEL_ID}")
     else:
         print("📢 Канал не задан")
-
-    # Запускаем фоновый планировщик
-    loop = asyncio.get_event_loop()
-    loop.create_task(scheduler_loop(app))
 
     print("✅ Бот готов, запускаем поллинг...")
     app.run_polling(drop_pending_updates=True)
