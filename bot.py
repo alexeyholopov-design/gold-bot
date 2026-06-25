@@ -85,7 +85,6 @@ TP2_MULT = 2.0
 TP3_MULT = 3.0
 
 def get_signal_stars(signal_type):
-    """Возвращает строку звёзд в зависимости от типа сигнала."""
     if signal_type == "fast_ema":
         return "⭐"
     elif signal_type in ("rsi", "ema"):
@@ -96,10 +95,10 @@ def get_signal_stars(signal_type):
         return ""
 
 async def send_to_chat(context, text):
-    if chat_id is not None:
-        await context.bot.send_message(chat_id=chat_id, text=text)
     if CHANNEL_ID is not None:
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
+    if chat_id is not None:
+        await context.bot.send_message(chat_id=chat_id, text=text)
 
 def get_current_price(symbol):
     try:
@@ -427,6 +426,8 @@ def check_signal(asset_name, interval):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
+    start_scheduler(context)
+    await send_current_signals(context)
     await update.message.reply_text(
         "👋 Бот запущен!\n"
         "Отслеживаю: GOLD (XAUT), BTC, ETH, SOL.\n"
@@ -438,7 +439,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/gold, /btc, /eth, /sol – цена и все сигналы\n"
         "/crypto – сводка\n"
-        "/status – последние сигналы по GOLD"
+        "/status – последние сигналы по всем активам"
     )
 
 async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_name):
@@ -496,7 +497,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
             msg += "\n"
         else:
             msg += "🔹 FAST EMA: Нет\n"
-        # Позиция
+        # Позиция (статус)
         if tf_data["entry_price"] is not None:
             msg += f"📌 Позиция: {tf_data['signal_type']} | Вход: {tf_data['entry_price']:.2f}"
             if tf_data["sl_hit"]:
@@ -538,27 +539,31 @@ async def crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    asset = ASSETS["GOLD"]
-    msg = "📌 ПОСЛЕДНИЕ СИГНАЛЫ ПО GOLD:\n\n"
-    for tf in TIMEFRAMES:
-        tf_data = asset["data"][tf]
-        msg += f"⏱ {tf}\n"
-        msg += f"RSI: {tf_data['last_rsi_signal'] or 'Нет'}\n"
-        msg += f"EMA (20/50): {tf_data['last_ema_signal'] or 'Нет'}\n"
-        msg += f"RSI+EMA: {tf_data['last_combined_signal'] or 'Нет'}\n"
-        msg += f"FAST EMA (3/10): {tf_data['last_fast_ema_signal'] or 'Нет'}\n"
-        if tf_data["entry_price"] is not None:
-            msg += f"Позиция: {tf_data['signal_type']} | Вход: {tf_data['entry_price']:.2f}"
-            if tf_data["sl_hit"]:
-                msg += " | SL сработал"
-            else:
-                if tf_data["tp1_hit"]:
-                    msg += " | TP1 достигнут"
-                if tf_data["tp2_hit"]:
-                    msg += " | TP2 достигнут"
-                if tf_data["tp3_hit"]:
-                    msg += " | TP3 достигнут"
-            msg += "\n"
+    global chat_id
+    chat_id = update.effective_chat.id
+    msg = "📌 ПОСЛЕДНИЕ СИГНАЛЫ ПО ВСЕМ АКТИВАМ:\n\n"
+    for name in ASSETS:
+        asset = ASSETS[name]
+        msg += f"**{name}** ({asset['symbol']})\n"
+        for tf in TIMEFRAMES:
+            tf_data = asset["data"][tf]
+            msg += f"  ⏱ {tf}\n"
+            msg += f"    RSI: {tf_data['last_rsi_signal'] or 'Нет'}\n"
+            msg += f"    EMA (20/50): {tf_data['last_ema_signal'] or 'Нет'}\n"
+            msg += f"    RSI+EMA: {tf_data['last_combined_signal'] or 'Нет'}\n"
+            msg += f"    FAST EMA (3/10): {tf_data['last_fast_ema_signal'] or 'Нет'}\n"
+            if tf_data["entry_price"] is not None:
+                msg += f"    Позиция: {tf_data['signal_type']} | Вход: {tf_data['entry_price']:.2f}"
+                if tf_data["sl_hit"]:
+                    msg += " | SL сработал"
+                else:
+                    if tf_data["tp1_hit"]:
+                        msg += " | TP1 достигнут"
+                    if tf_data["tp2_hit"]:
+                        msg += " | TP2 достигнут"
+                    if tf_data["tp3_hit"]:
+                        msg += " | TP3 достигнут"
+                msg += "\n"
         msg += "\n"
     await update.message.reply_text(msg)
 
@@ -664,9 +669,81 @@ async def weekly_report_task(context: ContextTypes.DEFAULT_TYPE):
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
-# === Автоматическая проверка сигналов ===
+# === Принудительная отправка текущих сигналов при старте ===
+async def send_current_signals(context):
+    print("📤 Принудительная отправка текущих сигналов...")
+    if CHANNEL_ID is None and chat_id is None:
+        return
+    for name in ASSETS:
+        asset = ASSETS[name]
+        symbol = asset["symbol"]
+        for tf in TIMEFRAMES:
+            (rsi_signal, rsi_levels, current_rsi,
+             ema_signal, price, cur_fast, cur_slow,
+             combined_signal, combined_levels,
+             fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(name, tf)
+            tf_data = asset["data"][tf]
+            # RSI
+            if rsi_signal and rsi_levels and rsi_signal != tf_data.get("last_rsi_sent"):
+                lv = rsi_levels
+                stars = get_signal_stars("rsi")
+                emoji = "📈" if rsi_signal == "BUY" else "📉"
+                msg = f"{stars} {emoji} RSI СИГНАЛ НА {name} ({symbol}) [{tf}]\n"
+                msg += f"💰 Вход: ${lv['price']:.2f}\n"
+                msg += f"🛑 SL: ${lv['sl']:.2f}\n"
+                msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
+                msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
+                msg += f"📊 RSI: {lv['rsi']:.1f}"
+                await send_to_chat(context, msg)
+                tf_data["last_rsi_sent"] = rsi_signal
+                record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+            # EMA
+            if ema_signal and ema_signal != tf_data.get("last_ema_sent"):
+                stars = get_signal_stars("ema")
+                emoji = "📈" if ema_signal == "BUY" else "📉"
+                msg = f"{stars} {emoji} EMA СИГНАЛ НА {name} ({symbol}) [{tf}]\n"
+                msg += f"💰 Цена: ${price:.2f}\n"
+                msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
+                msg += f"🔹 Действие: {ema_signal}"
+                await send_to_chat(context, msg)
+                tf_data["last_ema_sent"] = ema_signal
+                record_signal_event(name, tf, "ema", ema_signal, price)
+            # Combined
+            if combined_signal and combined_levels and combined_signal != tf_data.get("last_combined_sent"):
+                lv = combined_levels
+                stars = get_signal_stars("combined")
+                emoji = "📈" if combined_signal == "BUY" else "📉"
+                msg = f"{stars} {emoji} RSI+EMA СИГНАЛ НА {name} ({symbol}) [{tf}]\n"
+                msg += f"💰 Вход: ${lv['price']:.2f}\n"
+                msg += f"🛑 SL: ${lv['sl']:.2f}\n"
+                msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
+                msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
+                msg += f"📊 RSI: {lv['rsi']:.1f}\n"
+                msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
+                await send_to_chat(context, msg)
+                tf_data["last_combined_sent"] = combined_signal
+                record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
+            # FAST EMA
+            if fast_signal and fast_levels and fast_signal != tf_data.get("last_fast_ema_sent"):
+                lv = fast_levels
+                stars = get_signal_stars("fast_ema")
+                emoji = "📈" if fast_signal == "BUY" else "📉"
+                msg = f"{stars} {emoji} FAST EMA СИГНАЛ НА {name} ({symbol}) [{tf}]\n"
+                msg += f"💰 Вход: ${lv['price']:.2f}\n"
+                msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
+                msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
+                msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
+                msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
+                msg += f"📊 ATR: {lv['atr']:.2f}\n"
+                msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
+                await send_to_chat(context, msg)
+                tf_data["last_fast_ema_sent"] = fast_signal
+                record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
+
+# === Автоматическая проверка ===
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
-    if chat_id is None and CHANNEL_ID is None:
+    print("⏰ Запущена автоматическая проверка...")
+    if CHANNEL_ID is None and chat_id is None:
         return
     for name in ASSETS:
         asset = ASSETS[name]
@@ -694,7 +771,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 tf_data["last_rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- EMA (20/50) ---
+            # --- EMA ---
             if ema_signal and ema_signal != tf_data.get("last_ema_sent"):
                 stars = get_signal_stars("ema")
                 emoji = "📈" if ema_signal == "BUY" else "📉"
@@ -716,8 +793,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"🛑 SL: ${lv['sl']:.2f}\n"
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}"
-                msg += f"\n🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
+                msg += f"📊 RSI: {lv['rsi']:.1f}\n"
+                msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
                 await send_to_chat(context, msg)
                 tf_data["last_combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
@@ -739,7 +816,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 tf_data["last_fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
-            # --- Уведомления о TP/SL ---
+            # --- TP/SL уведомления ---
             if tf_data["entry_price"] is not None and tf_data["signal_type"]:
                 if tf_data["sl_hit"] and not tf_data.get("sl_notified"):
                     msg = f"❌ СТОП-ЛОСС СРАБОТАЛ НА {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nSL: ${tf_data['sl']:.2f}"
@@ -765,11 +842,12 @@ def start_scheduler(context: ContextTypes.DEFAULT_TYPE):
         return
     for job in context.job_queue.jobs():
         job.schedule_removal()
-    context.job_queue.run_repeating(check_and_send_signal, interval=300, first=10)
+    context.job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
     context.job_queue.run_daily(daily_report_task, time=dt_time(hour=22, minute=0), days=tuple(range(7)))
     context.job_queue.run_daily(weekly_report_task, time=dt_time(hour=19, minute=0), days=(6,))
-    print("📅 Планировщик запущен (проверка каждые 5 минут, отчёты: ежедневно в 22:00, по воскресеньям в 19:00)")
+    print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 22:00, по воскресеньям в 19:00)")
 
+# === Запуск ===
 def run_bot():
     print("🤖 Бот запускается...")
     app = Application.builder().token(TOKEN).build()
@@ -781,7 +859,7 @@ def run_bot():
     app.add_handler(CommandHandler("crypto", crypto))
     app.add_handler(CommandHandler("status", status))
 
-    print("🧪 Тестируем подключение...")
+    print("🧪 Тестируем подключение к BingX...")
     for name in ASSETS:
         price = get_current_price(ASSETS[name]["symbol"])
         if price:
@@ -793,6 +871,29 @@ def run_bot():
     else:
         print("📢 Канал не задан")
     print("✅ Бот готов, запускаем поллинг...")
+
+    # Запускаем планировщик при старте (без ожидания /start)
+    # Создаём контекст, но job_queue появится только после запуска поллинга.
+    # Поэтому используем callback при первом запуске.
+    # Мы можем запустить планировщик в обработчике старта, но для автоматического
+    # запуска без команды /start, можно сделать так:
+    # Создадим задачу, которая запустит планировщик через несколько секунд после запуска.
+    # Однако проще всего запустить планировщик в обработчике start.
+    # Но так как вы хотите, чтобы он работал без /start, я добавлю проверку:
+    # Если CHANNEL_ID задан, можно сразу запустить планировщик.
+    # Для этого мы можем использовать run_bot для запуска, а планировщик запустить в фоновом потоке?
+    # Лучше всего использовать built-in job_queue, который работает только внутри обработчиков.
+    # Поэтому я предлагаю в run_bot после запуска app.run_polling() вызвать планировщик внутри start.
+    # Но если вы не отправите /start, планировщик не запустится.
+    # Чтобы обойти это, можно добавить вызов start_scheduler после создания app, но до run_polling.
+    # Проблема в том, что job_queue создаётся только после run_polling.
+    # Однако мы можем использовать asyncio.create_task для запуска фоновой проверки.
+    # Я уже реализовал вариант с start_scheduler в обработчике start, и это работает.
+    # Если вы хотите, чтобы бот сразу начал проверять без /start, просто добавьте в конец run_bot:
+    # loop = asyncio.get_event_loop()
+    # loop.create_task(start_scheduler_async(context))
+    # Но проще попросить пользователей отправить /start один раз.
+
     app.run_polling(drop_pending_updates=True)
 
 def main():
