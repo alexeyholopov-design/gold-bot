@@ -31,6 +31,7 @@ signal_history = []
 
 TIMEFRAMES = ["5m", "15m"]
 
+# === Новая структура: для каждого типа сигнала свои уровни ===
 ASSETS = {
     "GOLD": {"symbol": "XAUT-USDT", "data": {}},
     "BTC":  {"symbol": "BTC-USDT",  "data": {}},
@@ -41,32 +42,22 @@ ASSETS = {
 for asset in ASSETS:
     for tf in TIMEFRAMES:
         ASSETS[asset]["data"][tf] = {
-            "last_rsi_signal": None,
-            "last_rsi_levels": None,
-            "last_rsi_sent": None,
-            "last_ema_signal": None,
-            "last_ema_levels": None,
-            "last_ema_sent": None,
-            "last_combined_signal": None,
-            "last_combined_levels": None,
-            "last_combined_sent": None,
-            "last_fast_ema_signal": None,
-            "last_fast_ema_levels": None,
-            "last_fast_ema_sent": None,
-            "entry_price": None,
-            "sl": None,
-            "tp1": None,
-            "tp2": None,
-            "tp3": None,
-            "tp1_hit": False,
-            "tp2_hit": False,
-            "tp3_hit": False,
-            "sl_hit": False,
-            "signal_type": None,
-            "tp1_notified": False,
-            "tp2_notified": False,
-            "tp3_notified": False,
-            "sl_notified": False,
+            # RSI
+            "rsi_signal": None,
+            "rsi_levels": None,
+            "rsi_sent": None,
+            # EMA
+            "ema_signal": None,
+            "ema_levels": None,
+            "ema_sent": None,
+            # Combined
+            "combined_signal": None,
+            "combined_levels": None,
+            "combined_sent": None,
+            # FAST EMA
+            "fast_ema_signal": None,
+            "fast_ema_levels": None,
+            "fast_ema_sent": None,
         }
 
 RSI_PERIOD = 14
@@ -290,9 +281,9 @@ def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1
     signal_history.append(entry)
     print(f"📝 Записано: {asset_name} {tf} {signal_type} {signal} @ {price}")
 
-def update_signal_event(asset_name, tf, event_type, value):
+def update_signal_event(asset_name, tf, signal_type, event_type, value):
     for entry in reversed(signal_history):
-        if entry["asset"] == asset_name and entry["tf"] == tf and not entry["closed"]:
+        if entry["asset"] == asset_name and entry["tf"] == tf and entry["type"] == signal_type and not entry["closed"]:
             if event_type == "tp1":
                 entry["tp1_hit"] = True
                 entry["closed"] = True
@@ -305,7 +296,7 @@ def update_signal_event(asset_name, tf, event_type, value):
             elif event_type == "sl":
                 entry["sl_hit"] = True
                 entry["closed"] = True
-            print(f"📝 Обновлено: {asset_name} {tf} {event_type}")
+            print(f"📝 Обновлено: {asset_name} {tf} {signal_type} {event_type}")
             break
 
 def check_signal(asset_name, interval):
@@ -317,7 +308,6 @@ def check_signal(asset_name, interval):
         return (None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None)
 
-    # RSI
     current_rsi, prev_rsi, high, low = get_rsi_and_bars(symbol, interval)
     rsi_signal = None
     rsi_levels = None
@@ -326,44 +316,26 @@ def check_signal(asset_name, interval):
             rsi_signal = "BUY"
         elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
             rsi_signal = "SELL"
-        if rsi_signal and rsi_signal != tf_data["last_rsi_signal"]:
+        if rsi_signal and rsi_signal != tf_data["rsi_signal"]:
             sl, tp1, tp2, _ = calculate_levels(price, high, low, rsi_signal)
             rsi_levels = {'price': price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'rsi': current_rsi}
-            tf_data["last_rsi_signal"] = rsi_signal
-            tf_data["last_rsi_levels"] = rsi_levels
-            tf_data["entry_price"] = price
-            tf_data["sl"] = sl
-            tf_data["tp1"] = tp1
-            tf_data["tp2"] = tp2
-            tf_data["tp3"] = None
-            tf_data["signal_type"] = "rsi"
-            tf_data["tp1_hit"] = tf_data["tp2_hit"] = tf_data["tp3_hit"] = tf_data["sl_hit"] = False
-            tf_data["tp1_notified"] = tf_data["tp2_notified"] = tf_data["tp3_notified"] = tf_data["sl_notified"] = False
+            tf_data["rsi_signal"] = rsi_signal
+            tf_data["rsi_levels"] = rsi_levels
 
     # EMA (20/50) + уровни по ATR (2 TP)
     ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, interval, EMA_FAST, EMA_SLOW)
     ema_levels = None
-    if ema_signal and ema_signal != tf_data["last_ema_signal"]:
+    if ema_signal and ema_signal != tf_data["ema_signal"]:
         atr = get_atr_value(symbol, interval)
         if atr is not None:
             sl, tp1, tp2, _ = calculate_atr_levels(price, atr, ema_signal)
             ema_levels = {'price': price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'atr': atr}
-            tf_data["last_ema_signal"] = ema_signal
-            tf_data["last_ema_levels"] = ema_levels
-            tf_data["entry_price"] = price
-            tf_data["sl"] = sl
-            tf_data["tp1"] = tp1
-            tf_data["tp2"] = tp2
-            tf_data["tp3"] = None
-            tf_data["signal_type"] = "ema"
-            tf_data["tp1_hit"] = tf_data["tp2_hit"] = tf_data["tp3_hit"] = tf_data["sl_hit"] = False
-            tf_data["tp1_notified"] = tf_data["tp2_notified"] = tf_data["tp3_notified"] = tf_data["sl_notified"] = False
+            tf_data["ema_signal"] = ema_signal
+            tf_data["ema_levels"] = ema_levels
         else:
             ema_signal = None
-    else:
-        ema_signal = None
 
-    # Combined
+    # Combined (RSI + EMA)
     combined_signal = None
     combined_levels = None
     if rsi_signal:
@@ -371,25 +343,14 @@ def check_signal(asset_name, interval):
             combined_signal = "BUY"
         elif rsi_signal == "SELL" and cur_fast < cur_slow:
             combined_signal = "SELL"
-        if combined_signal and combined_signal != tf_data["last_combined_signal"]:
+        if combined_signal and combined_signal != tf_data["combined_signal"]:
             if rsi_levels:
                 combined_levels = rsi_levels.copy()
             else:
                 sl, tp1, tp2, _ = calculate_levels(price, high, low, combined_signal)
                 combined_levels = {'price': price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'rsi': current_rsi}
-            tf_data["last_combined_signal"] = combined_signal
-            tf_data["last_combined_levels"] = combined_levels
-            if not rsi_levels:
-                tf_data["entry_price"] = price
-                tf_data["sl"] = sl
-                tf_data["tp1"] = tp1
-                tf_data["tp2"] = tp2
-                tf_data["tp3"] = None
-                tf_data["signal_type"] = "combined"
-                tf_data["tp1_hit"] = tf_data["tp2_hit"] = tf_data["tp3_hit"] = tf_data["sl_hit"] = False
-                tf_data["tp1_notified"] = tf_data["tp2_notified"] = tf_data["tp3_notified"] = tf_data["sl_notified"] = False
-        else:
-            combined_signal = None
+            tf_data["combined_signal"] = combined_signal
+            tf_data["combined_levels"] = combined_levels
 
     # FAST EMA (3/10) + ATR + фильтр тренда
     fast_signal = None
@@ -412,70 +373,64 @@ def check_signal(asset_name, interval):
                 trend_ok = True
         else:
             trend_ok = True
-
-        if trend_ok and fast_cross != tf_data["last_fast_ema_signal"]:
+        if trend_ok and fast_cross != tf_data["fast_ema_signal"]:
             atr = get_atr_value(symbol, interval)
             if atr is not None:
                 sl, tp1, tp2, tp3 = calculate_atr_levels(price, atr, fast_cross)
                 fast_levels = {'price': price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'atr': atr}
-                tf_data["last_fast_ema_signal"] = fast_cross
-                tf_data["last_fast_ema_levels"] = fast_levels
-                tf_data["entry_price"] = price
-                tf_data["sl"] = sl
-                tf_data["tp1"] = tp1
-                tf_data["tp2"] = tp2
-                tf_data["tp3"] = tp3
-                tf_data["signal_type"] = "fast_ema"
-                tf_data["tp1_hit"] = tf_data["tp2_hit"] = tf_data["tp3_hit"] = tf_data["sl_hit"] = False
-                tf_data["tp1_notified"] = tf_data["tp2_notified"] = tf_data["tp3_notified"] = tf_data["sl_notified"] = False
+                tf_data["fast_ema_signal"] = fast_cross
+                tf_data["fast_ema_levels"] = fast_levels
                 fast_signal = fast_cross
             else:
                 fast_signal = None
-        else:
-            fast_signal = None
-    else:
-        fast_signal = None
-
-    # TP/SL проверка
-    if tf_data["entry_price"] is not None and tf_data["sl"] is not None:
-        if tf_data["tp1"] is not None:
-            is_buy = tf_data["entry_price"] < tf_data["tp1"]
-        else:
-            is_buy = tf_data["entry_price"] > tf_data["sl"]
-
-        if not tf_data["sl_hit"]:
-            if is_buy and price <= tf_data["sl"]:
-                tf_data["sl_hit"] = True
-                update_signal_event(asset_name, interval, "sl", price)
-            elif not is_buy and price >= tf_data["sl"]:
-                tf_data["sl_hit"] = True
-                update_signal_event(asset_name, interval, "sl", price)
-        if tf_data["tp1"] is not None and not tf_data["tp1_hit"]:
-            if is_buy and price >= tf_data["tp1"]:
-                tf_data["tp1_hit"] = True
-                update_signal_event(asset_name, interval, "tp1", price)
-            elif not is_buy and price <= tf_data["tp1"]:
-                tf_data["tp1_hit"] = True
-                update_signal_event(asset_name, interval, "tp1", price)
-        if tf_data["tp2"] is not None and not tf_data["tp2_hit"]:
-            if is_buy and price >= tf_data["tp2"]:
-                tf_data["tp2_hit"] = True
-                update_signal_event(asset_name, interval, "tp2", price)
-            elif not is_buy and price <= tf_data["tp2"]:
-                tf_data["tp2_hit"] = True
-                update_signal_event(asset_name, interval, "tp2", price)
-        if tf_data["tp3"] is not None and not tf_data["tp3_hit"]:
-            if is_buy and price >= tf_data["tp3"]:
-                tf_data["tp3_hit"] = True
-                update_signal_event(asset_name, interval, "tp3", price)
-            elif not is_buy and price <= tf_data["tp3"]:
-                tf_data["tp3_hit"] = True
-                update_signal_event(asset_name, interval, "tp3", price)
 
     return (rsi_signal, rsi_levels, current_rsi,
             ema_signal, ema_levels, price, cur_fast, cur_slow,
             combined_signal, combined_levels,
             fast_signal, fast_levels, cur_fast3, cur_slow10, interval)
+
+# === Отдельная функция для проверки TP/SL для одного набора уровней ===
+async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels, sent_flag):
+    if not levels:
+        return
+    price = get_current_price(ASSETS[asset_name]["symbol"])
+    if price is None:
+        return
+    # Определяем направление
+    is_buy = levels.get('price', 0) < levels.get('tp1', 0) if levels.get('tp1') else levels.get('price', 0) > levels.get('sl', 0)
+    # Проверяем SL (только если ни один TP не достигнут)
+    if not levels.get('tp1_hit', False) and not levels.get('tp2_hit', False) and not levels.get('tp3_hit', False):
+        if not levels.get('sl_hit', False):
+            if is_buy and price <= levels['sl']:
+                levels['sl_hit'] = True
+                update_signal_event(asset_name, interval, signal_type, "sl", price)
+                msg = f"❌ Стоп-лосс сработал по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}"
+                await send_to_chat(FakeContext(bot), msg)
+                return  # позиция закрыта, дальше не проверяем
+    # Проверяем TP (только если SL не сработал)
+    if not levels.get('sl_hit', False):
+        if levels.get('tp1') is not None and not levels.get('tp1_hit', False):
+            if is_buy and price >= levels['tp1']:
+                levels['tp1_hit'] = True
+                update_signal_event(asset_name, interval, signal_type, "tp1", price)
+                msg = f"✅ TP1 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}"
+                await send_to_chat(FakeContext(bot), msg)
+        if levels.get('tp2') is not None and not levels.get('tp2_hit', False):
+            if is_buy and price >= levels['tp2']:
+                levels['tp2_hit'] = True
+                update_signal_event(asset_name, interval, signal_type, "tp2", price)
+                msg = f"✅ TP2 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}"
+                await send_to_chat(FakeContext(bot), msg)
+        if levels.get('tp3') is not None and not levels.get('tp3_hit', False):
+            if is_buy and price >= levels['tp3']:
+                levels['tp3_hit'] = True
+                update_signal_event(asset_name, interval, signal_type, "tp3", price)
+                msg = f"✅ TP3 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f}"
+                await send_to_chat(FakeContext(bot), msg)
+
+class FakeContext:
+    def __init__(self, bot):
+        self.bot = bot
 
 # === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -511,40 +466,35 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
         return
 
     for tf in TIMEFRAMES:
-        (rsi_signal, rsi_levels, current_rsi,
-         ema_signal, ema_levels, _, cur_fast, cur_slow,
-         combined_signal, combined_levels,
-         fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(asset_name, tf)
         tf_data = asset["data"][tf]
-        
         msg += f"⏱ {tf}\n"
-        msg += f"📊 RSI: {current_rsi:.1f}\n" if current_rsi else "📊 RSI: —\n"
         # RSI
-        if tf_data["last_rsi_signal"]:
-            lv = tf_data["last_rsi_levels"]
-            direction = "покупку" if tf_data["last_rsi_signal"] == "BUY" else "продажу"
+        if tf_data["rsi_signal"]:
+            lv = tf_data["rsi_levels"]
+            direction = "покупку" if tf_data["rsi_signal"] == "BUY" else "продажу"
             msg += f"🔹 Сигнал на {direction} по RSI"
             if lv:
                 msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f}"
             msg += "\n"
         else:
             msg += "🔹 RSI: Нет\n"
-        # EMA (20/50)
-        if tf_data["last_ema_signal"]:
-            lv = tf_data["last_ema_levels"]
-            direction = "покупку" if tf_data["last_ema_signal"] == "BUY" else "продажу"
+        # EMA
+        if tf_data["ema_signal"]:
+            lv = tf_data["ema_levels"]
+            direction = "покупку" if tf_data["ema_signal"] == "BUY" else "продажу"
             msg += f"🔸 Сигнал на {direction} по EMA (20/50)"
             if lv:
                 msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f}"
             else:
-                msg += f" (EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f})"
+                # если уровней нет, но сигнал есть (маловероятно)
+                pass
             msg += "\n"
         else:
             msg += "🔸 EMA (20/50): Нет\n"
         # Combined
-        if tf_data["last_combined_signal"]:
-            lv = tf_data["last_combined_levels"]
-            direction = "покупку" if tf_data["last_combined_signal"] == "BUY" else "продажу"
+        if tf_data["combined_signal"]:
+            lv = tf_data["combined_levels"]
+            direction = "покупку" if tf_data["combined_signal"] == "BUY" else "продажу"
             msg += f"🔹 Сигнал на {direction} по RSI+EMA"
             if lv:
                 msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f}"
@@ -552,28 +502,27 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
         else:
             msg += "🔹 RSI+EMA: Нет\n"
         # FAST EMA
-        if tf_data["last_fast_ema_signal"]:
-            lv = tf_data["last_fast_ema_levels"]
-            direction = "покупку" if tf_data["last_fast_ema_signal"] == "BUY" else "продажу"
+        if tf_data["fast_ema_signal"]:
+            lv = tf_data["fast_ema_levels"]
+            direction = "покупку" if tf_data["fast_ema_signal"] == "BUY" else "продажу"
             msg += f"⭐ Сигнал на {direction} по FAST EMA (3/10)"
             if lv:
                 msg += f" | Вход: {lv['price']:.2f} | SL: {lv['sl']:.2f} | TP1: {lv['tp1']:.2f} | TP2: {lv['tp2']:.2f} | TP3: {lv['tp3']:.2f}"
             msg += "\n"
         else:
             msg += "⭐ FAST EMA: Нет\n"
-        # Позиция
-        if tf_data["entry_price"] is not None:
-            msg += f"📌 Позиция: {tf_data['signal_type']} | Вход: {tf_data['entry_price']:.2f}"
-            if tf_data["sl_hit"]:
-                msg += " | ❌ SL сработал"
-            else:
-                if tf_data["tp1_hit"]:
-                    msg += " | ✅ TP1 достигнут"
-                if tf_data["tp2_hit"]:
-                    msg += " | ✅ TP2 достигнут"
-                if tf_data["tp3_hit"]:
-                    msg += " | ✅ TP3 достигнут"
-            msg += "\n"
+        # Статус уровней (для отладки)
+        for sig_type in ["rsi", "ema", "combined", "fast_ema"]:
+            key = sig_type + "_levels"
+            if tf_data.get(key):
+                lv = tf_data[key]
+                if lv.get('sl_hit') or lv.get('tp1_hit') or lv.get('tp2_hit') or lv.get('tp3_hit'):
+                    msg += f"   {sig_type.upper()} статус:"
+                    if lv.get('sl_hit'): msg += " SL сработал"
+                    if lv.get('tp1_hit'): msg += " TP1 достигнут"
+                    if lv.get('tp2_hit'): msg += " TP2 достигнут"
+                    if lv.get('tp3_hit'): msg += " TP3 достигнут"
+                    msg += "\n"
         msg += "\n"
 
     await update.message.reply_text(msg)
@@ -594,10 +543,10 @@ async def crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"**{name}** ({asset['symbol']})\n"
         for tf in TIMEFRAMES:
             tf_data = asset["data"][tf]
-            rsi_sig = tf_data["last_rsi_signal"] or "Нет"
-            ema_sig = tf_data["last_ema_signal"] or "Нет"
-            comb_sig = tf_data["last_combined_signal"] or "Нет"
-            fast_sig = tf_data["last_fast_ema_signal"] or "Нет"
+            rsi_sig = tf_data["rsi_signal"] or "Нет"
+            ema_sig = tf_data["ema_signal"] or "Нет"
+            comb_sig = tf_data["combined_signal"] or "Нет"
+            fast_sig = tf_data["fast_ema_signal"] or "Нет"
             msg += f"  {tf}: RSI={rsi_sig}, EMA={ema_sig}, RSI+EMA={comb_sig}, FAST={fast_sig}\n"
         msg += "\n"
     await update.message.reply_text(msg)
@@ -612,22 +561,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for tf in TIMEFRAMES:
             tf_data = asset["data"][tf]
             msg += f"  ⏱ {tf}\n"
-            msg += f"    RSI: {tf_data['last_rsi_signal'] or 'Нет'}\n"
-            msg += f"    EMA (20/50): {tf_data['last_ema_signal'] or 'Нет'}\n"
-            msg += f"    RSI+EMA: {tf_data['last_combined_signal'] or 'Нет'}\n"
-            msg += f"    FAST EMA (3/10): {tf_data['last_fast_ema_signal'] or 'Нет'}\n"
-            if tf_data["entry_price"] is not None:
-                msg += f"    Позиция: {tf_data['signal_type']} | Вход: {tf_data['entry_price']:.2f}"
-                if tf_data["sl_hit"]:
-                    msg += " | SL сработал"
-                else:
-                    if tf_data["tp1_hit"]:
-                        msg += " | TP1 достигнут"
-                    if tf_data["tp2_hit"]:
-                        msg += " | TP2 достигнут"
-                    if tf_data["tp3_hit"]:
-                        msg += " | TP3 достигнут"
-                msg += "\n"
+            msg += f"    RSI: {tf_data['rsi_signal'] or 'Нет'}\n"
+            msg += f"    EMA (20/50): {tf_data['ema_signal'] or 'Нет'}\n"
+            msg += f"    RSI+EMA: {tf_data['combined_signal'] or 'Нет'}\n"
+            msg += f"    FAST EMA (3/10): {tf_data['fast_ema_signal'] or 'Нет'}\n"
         msg += "\n"
     await update.message.reply_text(msg)
 
@@ -733,7 +670,7 @@ async def weekly_report_task(context: ContextTypes.DEFAULT_TYPE):
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
-# === Принудительная отправка ===
+# === Принудительная отправка текущих сигналов ===
 async def send_current_signals(context):
     print("📤 Принудительная отправка текущих сигналов...")
     if CHANNEL_ID is None and chat_id is None:
@@ -748,7 +685,7 @@ async def send_current_signals(context):
              fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(name, tf)
             tf_data = asset["data"][tf]
             # RSI
-            if rsi_signal and rsi_levels and rsi_signal != tf_data.get("last_rsi_sent"):
+            if rsi_signal and rsi_levels and rsi_signal != tf_data.get("rsi_sent"):
                 lv = rsi_levels
                 stars = get_signal_stars("rsi")
                 direction = "покупку" if rsi_signal == "BUY" else "продажу"
@@ -759,10 +696,10 @@ async def send_current_signals(context):
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
                 await send_to_chat(context, msg)
-                tf_data["last_rsi_sent"] = rsi_signal
+                tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
             # EMA
-            if ema_signal and ema_levels and ema_signal != tf_data.get("last_ema_sent"):
+            if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
                 direction = "покупку" if ema_signal == "BUY" else "продажу"
@@ -775,10 +712,10 @@ async def send_current_signals(context):
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
                 await send_to_chat(context, msg)
-                tf_data["last_ema_sent"] = ema_signal
+                tf_data["ema_sent"] = ema_signal
                 record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
             # Combined
-            if combined_signal and combined_levels and combined_signal != tf_data.get("last_combined_sent"):
+            if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
                 stars = get_signal_stars("combined")
                 direction = "покупку" if combined_signal == "BUY" else "продажу"
@@ -790,10 +727,10 @@ async def send_current_signals(context):
                 msg += f"📊 RSI: {lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
                 await send_to_chat(context, msg)
-                tf_data["last_combined_sent"] = combined_signal
+                tf_data["combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
             # FAST
-            if fast_signal and fast_levels and fast_signal != tf_data.get("last_fast_ema_sent"):
+            if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
                 direction = "покупку" if fast_signal == "BUY" else "продажу"
@@ -806,7 +743,7 @@ async def send_current_signals(context):
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
                 await send_to_chat(context, msg)
-                tf_data["last_fast_ema_sent"] = fast_signal
+                tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
 # === Автоматическая проверка (используется в цикле) ===
@@ -814,10 +751,6 @@ async def check_and_send_signal(bot):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
         return
-    # Создаём фейковый контекст для send_to_chat
-    class FakeContext:
-        def __init__(self, bot):
-            self.bot = bot
     context = FakeContext(bot)
     for name in ASSETS:
         asset = ASSETS[name]
@@ -830,8 +763,9 @@ async def check_and_send_signal(bot):
              fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(name, tf)
             tf_data = asset["data"][tf]
 
-            # --- RSI ---
-            if rsi_signal and rsi_levels and rsi_signal != tf_data.get("last_rsi_sent"):
+            # Отправка новых сигналов
+            # RSI
+            if rsi_signal and rsi_levels and rsi_signal != tf_data.get("rsi_sent"):
                 lv = rsi_levels
                 stars = get_signal_stars("rsi")
                 direction = "покупку" if rsi_signal == "BUY" else "продажу"
@@ -842,11 +776,11 @@ async def check_and_send_signal(bot):
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
                 msg += f"📊 RSI: {lv['rsi']:.1f}"
                 await send_to_chat(context, msg)
-                tf_data["last_rsi_sent"] = rsi_signal
+                tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- EMA ---
-            if ema_signal and ema_levels and ema_signal != tf_data.get("last_ema_sent"):
+            # EMA
+            if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
                 direction = "покупку" if ema_signal == "BUY" else "продажу"
@@ -859,11 +793,11 @@ async def check_and_send_signal(bot):
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
                 await send_to_chat(context, msg)
-                tf_data["last_ema_sent"] = ema_signal
+                tf_data["ema_sent"] = ema_signal
                 record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- Combined ---
-            if combined_signal and combined_levels and combined_signal != tf_data.get("last_combined_sent"):
+            # Combined
+            if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
                 stars = get_signal_stars("combined")
                 direction = "покупку" if combined_signal == "BUY" else "продажу"
@@ -875,11 +809,11 @@ async def check_and_send_signal(bot):
                 msg += f"📊 RSI: {lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
                 await send_to_chat(context, msg)
-                tf_data["last_combined_sent"] = combined_signal
+                tf_data["combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
 
-            # --- FAST ---
-            if fast_signal and fast_levels and fast_signal != tf_data.get("last_fast_ema_sent"):
+            # FAST
+            if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
                 direction = "покупку" if fast_signal == "BUY" else "продажу"
@@ -892,29 +826,24 @@ async def check_and_send_signal(bot):
                 msg += f"📊 ATR: {lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
                 await send_to_chat(context, msg)
-                tf_data["last_fast_ema_sent"] = fast_signal
+                tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
-            # --- TP/SL уведомления ---
-            if tf_data["entry_price"] is not None and tf_data["signal_type"]:
-                if tf_data["sl_hit"] and not tf_data.get("sl_notified"):
-                    msg = f"❌ Стоп-лосс сработал по {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nSL: ${tf_data['sl']:.2f}"
-                    await send_to_chat(context, msg)
-                    tf_data["sl_notified"] = True
-                if tf_data["tp1_hit"] and not tf_data.get("tp1_notified"):
-                    msg = f"✅ TP1 достигнут по {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nTP1: ${tf_data['tp1']:.2f}"
-                    await send_to_chat(context, msg)
-                    tf_data["tp1_notified"] = True
-                if tf_data["tp2_hit"] and not tf_data.get("tp2_notified"):
-                    msg = f"✅ TP2 достигнут по {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nTP2: ${tf_data['tp2']:.2f}"
-                    await send_to_chat(context, msg)
-                    tf_data["tp2_notified"] = True
-                if tf_data["tp3_hit"] and not tf_data.get("tp3_notified"):
-                    msg = f"✅ TP3 достигнут по {name} [{tf}]\nВход: ${tf_data['entry_price']:.2f}\nTP3: ${tf_data['tp3']:.2f}"
-                    await send_to_chat(context, msg)
-                    tf_data["tp3_notified"] = True
+            # Проверка TP/SL для каждого типа сигнала
+            # RSI
+            if tf_data.get("rsi_levels"):
+                await check_and_notify_levels(bot, name, tf, "rsi", tf_data["rsi_levels"], tf_data.get("rsi_sent"))
+            # EMA
+            if tf_data.get("ema_levels"):
+                await check_and_notify_levels(bot, name, tf, "ema", tf_data["ema_levels"], tf_data.get("ema_sent"))
+            # Combined
+            if tf_data.get("combined_levels"):
+                await check_and_notify_levels(bot, name, tf, "combined", tf_data["combined_levels"], tf_data.get("combined_sent"))
+            # FAST
+            if tf_data.get("fast_ema_levels"):
+                await check_and_notify_levels(bot, name, tf, "fast_ema", tf_data["fast_ema_levels"], tf_data.get("fast_ema_sent"))
 
-# === Фоновый цикл (без job_queue) ===
+# === Фоновый цикл ===
 async def scheduler_loop(app):
     await asyncio.sleep(10)
     print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
@@ -949,7 +878,6 @@ def run_bot():
     else:
         print("📢 Канал не задан")
 
-    # Запускаем фоновый цикл (без job_queue)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(scheduler_loop(app))
