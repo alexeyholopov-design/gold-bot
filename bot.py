@@ -572,7 +572,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Отчёты ===
 def get_moscow_time():
-    return datetime.utcnow() + timedelta(hours=3)
+    return datetime.now(timezone.utc) + timedelta(hours=3)
 
 async def generate_daily_report():
     now = get_moscow_time()
