@@ -90,7 +90,6 @@ def safe_float(value, default=0.0):
         return default
 
 def safe_format(value, format_spec=":.2f"):
-    """Форматирует число с заданной точностью, безопасно обрабатывая None и строки."""
     try:
         return f"{safe_float(value):{format_spec}}"
     except:
@@ -928,7 +927,7 @@ async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
     await send_to_chat(context, msg)
     print("✅ Утренний обзор отправлен")
 
-# === Отправка текущих сигналов (исправлено форматирование) ===
+# === Принудительная отправка сигналов ===
 async def send_current_signals(context):
     print("📤 Принудительная отправка текущих сигналов...")
     if CHANNEL_ID is None and chat_id is None:
@@ -942,7 +941,6 @@ async def send_current_signals(context):
              combined_signal, combined_levels,
              fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(name, tf)
             tf_data = asset["data"][tf]
-            # RSI
             if rsi_signal and rsi_levels and rsi_signal != tf_data.get("rsi_sent"):
                 lv = rsi_levels
                 stars = get_signal_stars("rsi")
@@ -965,7 +963,6 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
-            # EMA
             if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
@@ -978,7 +975,6 @@ async def send_current_signals(context):
                 msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
                 msg += f"📊 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}\n"
                 msg += f"🔹 Действие: {ema_signal}"
-                # AI
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -991,7 +987,6 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["ema_sent"] = ema_signal
                 record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
-            # Combined
             if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
                 stars = get_signal_stars("combined")
@@ -1003,7 +998,6 @@ async def send_current_signals(context):
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
                 msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}\n"
                 msg += f"🔹 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}"
-                # AI
                 atr_val = None
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1016,7 +1010,6 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
-            # FAST
             if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
@@ -1029,7 +1022,6 @@ async def send_current_signals(context):
                 msg += f"🎯 TP3: ${safe_format(lv['tp3'])} (ATR×{TP3_MULT})\n"
                 msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
                 msg += f"📊 EMA3: {safe_format(cur_fast3)}, EMA10: {safe_format(cur_slow10)}"
-                # AI
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1044,11 +1036,11 @@ async def send_current_signals(context):
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
 # === Автоматическая проверка (исправлено форматирование) ===
-async def check_and_send_signal(bot):
+async def check_and_send_signal(context):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
         return
-    context = FakeContext(bot)
+    # context уже содержит bot
     for name in ASSETS:
         asset = ASSETS[name]
         symbol = asset["symbol"]
@@ -1158,48 +1150,39 @@ async def check_and_send_signal(bot):
 
             # Проверка уровней
             if tf_data.get("rsi_levels"):
-                await check_and_notify_levels(bot, name, tf, "rsi", tf_data["rsi_levels"], tf_data.get("rsi_sent"))
+                await check_and_notify_levels(context.bot, name, tf, "rsi", tf_data["rsi_levels"], tf_data.get("rsi_sent"))
             if tf_data.get("ema_levels"):
-                await check_and_notify_levels(bot, name, tf, "ema", tf_data["ema_levels"], tf_data.get("ema_sent"))
+                await check_and_notify_levels(context.bot, name, tf, "ema", tf_data["ema_levels"], tf_data.get("ema_sent"))
             if tf_data.get("combined_levels"):
-                await check_and_notify_levels(bot, name, tf, "combined", tf_data["combined_levels"], tf_data.get("combined_sent"))
+                await check_and_notify_levels(context.bot, name, tf, "combined", tf_data["combined_levels"], tf_data.get("combined_sent"))
             if tf_data.get("fast_ema_levels"):
-                await check_and_notify_levels(bot, name, tf, "fast_ema", tf_data["fast_ema_levels"], tf_data.get("fast_ema_sent"))
+                await check_and_notify_levels(context.bot, name, tf, "fast_ema", tf_data["fast_ema_levels"], tf_data.get("fast_ema_sent"))
 
-# === Фоновый цикл ===
-async def scheduler_loop(app):
-    global LAST_NEWS_UPDATE
-    await asyncio.sleep(10)
-    print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
-    last_daily_report = None
-    last_weekly_report = None
-    last_morning_report = None
-    while True:
-        try:
-            now = get_moscow_time()
-            # Ежедневный отчёт в 21:00
-            if now.hour == 21 and now.minute == 0 and last_daily_report != now.date():
-                await daily_report_task(FakeContext(app.bot))
-                last_daily_report = now.date()
-            # Воскресный отчёт в 18:00
-            if now.weekday() == 6 and now.hour == 18 and now.minute == 0 and last_weekly_report != now.date():
-                await weekly_report_task(FakeContext(app.bot))
-                last_weekly_report = now.date()
-            # Утренний обзор в 10:00
-            if now.hour == 10 and now.minute == 0 and last_morning_report != now.date():
-                await send_morning_report(FakeContext(app.bot))
-                last_morning_report = now.date()
-            # Обновление новостного фона раз в час
-            if time.time() - LAST_NEWS_UPDATE > NEWS_UPDATE_INTERVAL:
-                await update_news_sentiment()
-                LAST_NEWS_UPDATE = time.time()
-            # Основная проверка сигналов
-            await check_and_send_signal(app.bot)
-        except Exception as e:
-            print(f"❌ Ошибка в планировщике: {e}")
-        await asyncio.sleep(60)
+# === Планировщик ===
+async def start_scheduler(app):
+    job_queue = app.job_queue
+    if job_queue is None:
+        print("⚠️ JobQueue не доступен. Установите apscheduler.")
+        return
+    # Очищаем старые задачи
+    for job in job_queue.jobs():
+        job.schedule_removal()
+    # Проверка сигналов каждую минуту
+    job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
+    # Ежедневный отчёт в 21:00 МСК
+    job_queue.run_daily(daily_report_task, time=dt_time(hour=21, minute=0), days=tuple(range(7)))
+    # Воскресный отчёт в 18:00 МСК
+    job_queue.run_daily(weekly_report_task, time=dt_time(hour=18, minute=0), days=(6,))
+    # Утренний обзор в 10:00 МСК
+    job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0), days=tuple(range(7)))
+    # Обновление новостей каждые 3600 секунд
+    job_queue.run_repeating(update_news_sentiment, interval=NEWS_UPDATE_INTERVAL, first=30)
+    print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 21:00, по воскресеньям в 18:00, утренний обзор в 10:00)")
 
 # === Запуск ===
+async def post_init(app):
+    await start_scheduler(app)
+
 def run_bot():
     print("🤖 Бот запускается...")
     if GIGACHAT_AUTH_KEY:
@@ -1208,7 +1191,7 @@ def run_bot():
     else:
         print("⚠️ GigaChat AI отключён (ключ не задан или пустой)")
 
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("btc", btc))
@@ -1230,10 +1213,6 @@ def run_bot():
         print(f"📢 Будет дублировать сообщения в канал {CHANNEL_ID}")
     else:
         print("📢 Канал не задан")
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(scheduler_loop(app))
 
     print("✅ Бот готов, запускаем поллинг...")
     app.run_polling(drop_pending_updates=True)
