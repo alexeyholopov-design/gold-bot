@@ -9,7 +9,7 @@ import numpy as np
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from datetime import time as dt_time, datetime, timedelta
+from datetime import time as dt_time, datetime, timedelta, timezone
 
 TOKEN = os.environ.get('TOKEN')
 if not TOKEN:
@@ -31,7 +31,7 @@ signal_history = []
 
 TIMEFRAMES = ["5m", "15m"]
 
-# === Новая структура: для каждого типа сигнала свои уровни ===
+# === Структура с раздельным хранением уровней для каждого типа сигнала ===
 ASSETS = {
     "GOLD": {"symbol": "XAUT-USDT", "data": {}},
     "BTC":  {"symbol": "BTC-USDT",  "data": {}},
@@ -46,7 +46,7 @@ for asset in ASSETS:
             "rsi_signal": None,
             "rsi_levels": None,
             "rsi_sent": None,
-            # EMA
+            # EMA (20/50)
             "ema_signal": None,
             "ema_levels": None,
             "ema_sent": None,
@@ -54,7 +54,7 @@ for asset in ASSETS:
             "combined_signal": None,
             "combined_levels": None,
             "combined_sent": None,
-            # FAST EMA
+            # FAST EMA (3/10)
             "fast_ema_signal": None,
             "fast_ema_levels": None,
             "fast_ema_sent": None,
@@ -389,12 +389,14 @@ def check_signal(asset_name, interval):
             combined_signal, combined_levels,
             fast_signal, fast_levels, cur_fast3, cur_slow10, interval)
 
-# === Отдельная функция для проверки TP/SL для одного набора уровней ===
+# === Проверка TP/SL для одного набора уровней (с логированием) ===
 async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels, sent_flag):
+    print(f"🔍 Проверка уровней для {asset_name} {interval} {signal_type}: {levels}")
     if not levels:
         return
     price = get_current_price(ASSETS[asset_name]["symbol"])
     if price is None:
+        print(f"❌ Не удалось получить цену для {asset_name}")
         return
     # Определяем направление
     is_buy = levels.get('price', 0) < levels.get('tp1', 0) if levels.get('tp1') else levels.get('price', 0) > levels.get('sl', 0)
@@ -569,8 +571,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # === Отчёты ===
+def get_moscow_time():
+    return datetime.utcnow() + timedelta(hours=3)
+
 async def generate_daily_report():
-    now = datetime.now()
+    now = get_moscow_time()
     yesterday = now - timedelta(days=1)
     events = [e for e in signal_history if e["timestamp"] >= yesterday]
     if not events:
@@ -616,7 +621,7 @@ async def generate_daily_report():
     return "\n".join(lines)
 
 async def generate_weekly_report():
-    now = datetime.now()
+    now = get_moscow_time()
     week_ago = now - timedelta(days=7)
     events = [e for e in signal_history if e["timestamp"] >= week_ago]
     if not events:
@@ -694,7 +699,7 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${lv['sl']:.2f}\n"
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}"
+                msg += f"📊 RSI: ${lv['rsi']:.1f}"
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'])
@@ -708,7 +713,7 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${lv['sl']:.2f} (ATR×{SL_MULT})\n"
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
-                msg += f"📊 ATR: {lv['atr']:.2f}\n"
+                msg += f"📊 ATR: ${lv['atr']:.2f}\n"
                 msg += f"📊 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}\n"
                 msg += f"🔹 Действие: {ema_signal}"
                 await send_to_chat(context, msg)
@@ -724,7 +729,7 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${lv['sl']:.2f}\n"
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (1:1)\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (1:2)\n"
-                msg += f"📊 RSI: {lv['rsi']:.1f}\n"
+                msg += f"📊 RSI: ${lv['rsi']:.1f}\n"
                 msg += f"🔹 EMA20: {cur_fast:.2f}, EMA50: {cur_slow:.2f}"
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
@@ -740,13 +745,13 @@ async def send_current_signals(context):
                 msg += f"🎯 TP1: ${lv['tp1']:.2f} (ATR×{TP1_MULT})\n"
                 msg += f"🎯 TP2: ${lv['tp2']:.2f} (ATR×{TP2_MULT})\n"
                 msg += f"🎯 TP3: ${lv['tp3']:.2f} (ATR×{TP3_MULT})\n"
-                msg += f"📊 ATR: {lv['atr']:.2f}\n"
+                msg += f"📊 ATR: ${lv['atr']:.2f}\n"
                 msg += f"📊 EMA3: {cur_fast3:.2f}, EMA10: {cur_slow10:.2f}"
                 await send_to_chat(context, msg)
                 tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'])
 
-# === Автоматическая проверка (используется в цикле) ===
+# === Автоматическая проверка и отправка сигналов ===
 async def check_and_send_signal(bot):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
@@ -843,12 +848,24 @@ async def check_and_send_signal(bot):
             if tf_data.get("fast_ema_levels"):
                 await check_and_notify_levels(bot, name, tf, "fast_ema", tf_data["fast_ema_levels"], tf_data.get("fast_ema_sent"))
 
-# === Фоновый цикл ===
+# === Фоновый цикл с отчётами по московскому времени ===
 async def scheduler_loop(app):
     await asyncio.sleep(10)
     print("🔄 Фоновый планировщик запущен (проверка каждую минуту)")
+    last_daily_report = None
+    last_weekly_report = None
     while True:
         try:
+            now = get_moscow_time()
+            # Ежедневный отчёт в 21:00 МСК
+            if now.hour == 21 and now.minute == 0 and last_daily_report != now.date():
+                await daily_report_task(FakeContext(app.bot))
+                last_daily_report = now.date()
+            # Воскресный отчёт в 18:00 МСК
+            if now.weekday() == 6 and now.hour == 18 and now.minute == 0 and last_weekly_report != now.date():
+                await weekly_report_task(FakeContext(app.bot))
+                last_weekly_report = now.date()
+            # Основная проверка сигналов
             await check_and_send_signal(app.bot)
         except Exception as e:
             print(f"❌ Ошибка в планировщике: {e}")
