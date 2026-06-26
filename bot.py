@@ -23,15 +23,13 @@ if not TOKEN:
     raise ValueError("TOKEN environment variable not set")
 
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
-SEND_TO_CHANNEL = True   # флаг отправки в канал
+SEND_TO_CHANNEL = True
 
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
 
-# Московское время
 MSK = timezone(timedelta(hours=3))
 
-# Flask для health-check
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -42,8 +40,8 @@ def run_flask():
     app_flask.run(host='0.0.0.0', port=10000)
 
 chat_id = None
-signal_history = []           # История всех закрытых/отработанных сигналов для отчётов
-active_signals = {}           # {asset_name: {tf: [signal_dict, ...]}}
+signal_history = []
+active_signals = {}
 gigachat_token = None
 gigachat_token_expires = 0
 
@@ -51,7 +49,6 @@ news_sentiment = {}
 LAST_NEWS_UPDATE = 0
 NEWS_UPDATE_INTERVAL = 3600
 
-# Таймфреймы для каждого актива
 ASSET_TIMEFRAMES = {
     "GOLD": ["5m", "15m"],
     "BTC":  ["15m", "1h"],
@@ -66,7 +63,6 @@ ASSETS = {
     "SOL":  {"symbol": "SOL-USDT"},
 }
 
-# Инициализируем структуру для активных сигналов
 for name, asset in ASSETS.items():
     active_signals[name] = {}
     for tf in ASSET_TIMEFRAMES[name]:
@@ -76,27 +72,24 @@ RSI_PERIOD = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 LOOKBACK = 50
-BARS_FOR_LEVELS = 10   # больше не используется для расчета целей, но оставлен для совместимости
+BARS_FOR_LEVELS = 10
 EMA_FAST = 20
 EMA_SLOW = 50
 EMA_FAST_FAST = 3
 EMA_SLOW_FAST = 10
 
-# Множители ATR в зависимости от таймфрейма
 ATR_MULTIPLIERS = {
     "5m":  {"SL": 1.2, "TP1": 1.5, "TP2": 2.0, "TP3": 3.0},
     "15m": {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0},
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
 }
 
-# Уровни, используемые при отсутствии ATR (запасной вариант)
 FALLBACK_LEVELS = {
     "5m":  {"SL": 0.5, "TP1": 0.8, "TP2": 1.2, "TP3": 2.0},
     "15m": {"SL": 0.8, "TP1": 1.5, "TP2": 2.5, "TP3": 4.0},
     "1h":  {"SL": 1.5, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
 }
 
-# ---------- Утилиты ----------
 def safe_format(value, format_spec=":.2f"):
     try:
         if value is None:
@@ -273,7 +266,6 @@ RSI (14): {rsi_str}
         return None
 
 async def validate_levels_with_ai(asset_name, tf, signal_type, price, levels):
-    """Проверка адекватности рассчитанных целей через GigaChat (только для старших ТФ)"""
     if tf not in ["1h", "15m"]:
         return levels, False
     if not GIGACHAT_AUTH_KEY:
@@ -444,7 +436,6 @@ def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50)
         return "DOWN"
     return None
 
-# ---------- Расчёт уровней через ATR ----------
 def calculate_atr_levels(price, atr, signal_type, tf):
     mult = ATR_MULTIPLIERS.get(tf, {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0})
     if signal_type == "BUY":
@@ -483,7 +474,6 @@ def create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis=
         'adjusted_by_ai': False
     }
 
-# ---------- Добавление сигнала в активные ----------
 def add_active_signal(asset_name, tf, signal_dict):
     if asset_name not in active_signals:
         active_signals[asset_name] = {}
@@ -491,7 +481,6 @@ def add_active_signal(asset_name, tf, signal_dict):
         active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней для одного сигнала ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']:
@@ -503,7 +492,6 @@ async def check_signal_levels(bot, signal_dict):
         return
 
     is_buy = signal_dict['signal'] == 'BUY'
-    # Проверка SL
     if not signal_dict['sl_hit']:
         sl_hit = (is_buy and price <= levels['sl']) or (not is_buy and price >= levels['sl'])
         if sl_hit:
@@ -515,9 +503,7 @@ async def check_signal_levels(bot, signal_dict):
             print(f"✅ Отправлено уведомление о SL для {asset_name} {signal_dict['tf']}")
             return
 
-    # Проверка TP (только если SL не сработал)
     if not signal_dict['sl_hit']:
-        # TP1
         if not signal_dict['tp1_hit']:
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
@@ -526,9 +512,7 @@ async def check_signal_levels(bot, signal_dict):
                 msg = (f"✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${safe_format(levels['price'])}\nTP1: ${safe_format(levels['tp1'])}")
                 await send_to_chat(FakeContext(bot), msg)
-                print(f"✅ Отправлено уведомление о TP1 для {asset_name} {signal_dict['tf']}")
                 return
-        # TP2
         if not signal_dict['tp2_hit'] and not signal_dict['closed']:
             tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
             if tp2_hit:
@@ -538,7 +522,6 @@ async def check_signal_levels(bot, signal_dict):
                        f"Вход: ${safe_format(levels['price'])}\nTP2: ${safe_format(levels['tp2'])}")
                 await send_to_chat(FakeContext(bot), msg)
                 return
-        # TP3
         if not signal_dict['tp3_hit'] and not signal_dict['closed']:
             tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
             if tp3_hit:
@@ -548,7 +531,6 @@ async def check_signal_levels(bot, signal_dict):
                        f"Вход: ${safe_format(levels['price'])}\nTP3: ${safe_format(levels['tp3'])}")
                 await send_to_chat(FakeContext(bot), msg)
 
-# ---------- Проверка всех активных сигналов ----------
 async def check_all_active_signals(bot):
     for asset_name, tf_dict in active_signals.items():
         for tf, signals in tf_dict.items():
@@ -558,7 +540,6 @@ async def check_all_active_signals(bot):
                     signal_history.append(sig)
                     signals.remove(sig)
 
-# ---------- Вспомогательная функция: проверка открытого сигнала такого же типа и направления ----------
 def has_open_signal(asset_name, tf, signal_type, direction):
     sigs = active_signals.get(asset_name, {}).get(tf, [])
     for s in sigs:
@@ -566,10 +547,8 @@ def has_open_signal(asset_name, tf, signal_type, direction):
             return True
     return False
 
-# ---------- Генерация и отправка нового сигнала ----------
 async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None, ema_fast=None, ema_slow=None,
                             cur_fast3=None, cur_slow10=None, atr=None, higher_trend=None, context=None):
-    # Проверка на дубликат
     if has_open_signal(asset_name, tf, signal_type, signal):
         return
 
@@ -600,14 +579,13 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     if ema_fast is not None and ema_slow is not None:
         msg += f"📊 EMA: {safe_format(ema_fast)} / {safe_format(ema_slow)}\n"
     if cur_fast3 is not None:
-        msg += f"📊 EMA(3/10): {safe_format(cur_fast3)} / {safe_format(cur_slow10)}\n"
+        msg += f"📊 EMA(3/10): {safe_format(float(cur_fast3))} / {safe_format(float(cur_slow10))}\n"
     if adjusted:
         msg += "🔧 Цели скорректированы AI\n"
     if ai_analysis:
         msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
-# ---------- Проверка рыночных условий и генерация сигналов ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     print("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
@@ -623,7 +601,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 continue
             try:
                 current_rsi, prev_rsi, high, low = get_rsi_and_bars(symbol, tf)
-                # RSI
                 rsi_signal = None
                 if current_rsi is not None and prev_rsi is not None:
                     if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD:
@@ -635,7 +612,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                         if atr is not None:
                             await handle_new_signal(name, tf, "rsi", rsi_signal, price, rsi=current_rsi, atr=atr, context=context)
 
-                # EMA (20/50)
                 ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf, EMA_FAST, EMA_SLOW)
                 if ema_signal:
                     atr = get_atr_value(symbol, tf)
@@ -643,7 +619,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                         await handle_new_signal(name, tf, "ema", ema_signal, price,
                                                 ema_fast=cur_fast, ema_slow=cur_slow, atr=atr, context=context)
 
-                # Combined
                 combined_signal = None
                 if rsi_signal and ema_signal:
                     if rsi_signal == "BUY" and cur_fast > cur_slow:
@@ -656,7 +631,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                             await handle_new_signal(name, tf, "combined", combined_signal, price,
                                                     rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr, context=context)
 
-                # FAST EMA (3/10)
                 fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, tf, EMA_FAST_FAST, EMA_SLOW_FAST)
                 if fast_cross:
                     higher_tf = "1h" if tf == "15m" else "15m" if tf != "1h" else None
@@ -796,7 +770,6 @@ def format_report(signals, title):
 
     return "\n".join(lines)
 
-# ---------- Отправка сообщений ----------
 class FakeContext:
     def __init__(self, bot):
         self.bot = bot
@@ -812,7 +785,6 @@ async def send_to_chat(context, text):
     except Exception as e:
         print(f"❌ Ошибка в send_to_chat: {e}")
 
-# ---------- Команды управления каналом ----------
 async def channel_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global SEND_TO_CHANNEL
     SEND_TO_CHANNEL = True
@@ -823,7 +795,6 @@ async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEND_TO_CHANNEL = False
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
-# ---------- Планировщик ----------
 async def start_scheduler(app):
     job_queue = app.job_queue
     if job_queue is None:
@@ -870,7 +841,6 @@ async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
     await send_to_chat(context, msg)
     print("✅ Утренний обзор отправлен")
 
-# ---------- Команды бота ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
@@ -986,7 +956,6 @@ async def ai_command(update, context):
     else:
         await update.message.reply_text("AI-анализ отсутствует.")
 
-# ---------- Запуск ----------
 async def post_init(app):
     await start_scheduler(app)
 
