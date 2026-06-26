@@ -48,8 +48,7 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
-# Символ GOLD будет определён после проверки доступа к Bybit
-GOLD_SYMBOL = "XAUT-USDT"  # По умолчанию BingX
+GOLD_SYMBOL = "XAUT-USDT"
 
 ASSETS = {
     "GOLD": {"symbol": GOLD_SYMBOL},
@@ -92,9 +91,8 @@ def safe_format(value, format_spec=":.2f"):
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
 
-# ---------- Bybit TradFi проверка доступа и функции ----------
+# ---------- Bybit TradFi ----------
 def bybit_sign_request(params):
-    """Подписывает параметры для Bybit API (HMAC)"""
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
     param_str = urllib.parse.urlencode(sorted(params.items()))
@@ -113,8 +111,8 @@ def bybit_sign_request(params):
     return headers
 
 def check_bybit_tradfi():
-    """Проверяет доступ к XAUUSDT+ (TradFi) и возвращает True при успехе"""
     global GOLD_SYMBOL
+    print("🔑 Проверка доступа к Bybit TradFi...")
     if not BYBIT_API_KEY or not BYBIT_API_SECRET:
         print("⚠️ Ключи Bybit не заданы, GOLD будет работать через BingX")
         return False
@@ -328,10 +326,8 @@ RSI (14): {rsi_str}
 
 # ---------- Рыночные данные ----------
 def get_current_price(symbol):
-    # Если включён Bybit TradFi и символ золото – используем Bybit
     if GOLD_SYMBOL == "XAUUSDT+" and symbol == "XAUUSDT+":
         return get_bybit_price(symbol)
-    # Иначе BingX
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
         params = {"symbol": symbol}
