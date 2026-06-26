@@ -232,7 +232,7 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
         return None
     direction = "покупку" if signal == "BUY" else "продажу"
     price_str = safe_format(price)
-    rsi_str = safe_format(rsi, ":.1f") if rsi is not None else "N/A"
+    rsi_str = f"{float(rsi):.1f}" if rsi is not None else "N/A"
     ema_text = ""
     if ema_fast is not None and ema_slow is not None:
         ema_text = f"EMA{EMA_FAST}: {safe_format(ema_fast)}, EMA{EMA_SLOW}: {safe_format(ema_slow)}"
@@ -569,17 +569,17 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     direction = "покупку" if signal == "BUY" else "продажу"
     symbol = ASSETS[asset_name]['symbol']
     msg = f"{stars} 📢 Сигнал на {direction} по {signal_type.upper()} для {asset_name} ({symbol}) [{tf}]\n"
-    msg += f"💰 Вход: ${safe_format(levels['price'])}\n"
-    msg += f"🛑 SL: ${safe_format(levels['sl'])} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('SL', '?')})\n"
-    msg += f"🎯 TP1: ${safe_format(levels['tp1'])} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP1', '?')})\n"
-    msg += f"🎯 TP2: ${safe_format(levels['tp2'])} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP2', '?')})\n"
-    msg += f"🎯 TP3: ${safe_format(levels['tp3'])} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
+    msg += f"💰 Вход: ${levels['price']:.2f}\n"
+    msg += f"🛑 SL: ${levels['sl']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('SL', '?')})\n"
+    msg += f"🎯 TP1: ${levels['tp1']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP1', '?')})\n"
+    msg += f"🎯 TP2: ${levels['tp2']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP2', '?')})\n"
+    msg += f"🎯 TP3: ${levels['tp3']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
     if rsi is not None:
-        msg += f"📊 RSI: {safe_format(rsi, ':.1f')}\n"
+        msg += f"📊 RSI: {float(rsi):.1f}\n"
     if ema_fast is not None and ema_slow is not None:
-        msg += f"📊 EMA: {safe_format(ema_fast)} / {safe_format(ema_slow)}\n"
+        msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
     if cur_fast3 is not None:
-        msg += f"📊 EMA(3/10): {safe_format(float(cur_fast3))} / {safe_format(float(cur_slow10))}\n"
+        msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
     if adjusted:
         msg += "🔧 Цели скорректированы AI\n"
     if ai_analysis:
@@ -831,7 +831,7 @@ async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
         price = get_current_price(symbol)
         rsi, _, _, _ = get_rsi_and_bars(symbol, "15m")
         if price is not None and rsi is not None:
-            msg += f"**{name}** ({symbol}): ${safe_format(price)}  |  RSI(14): {safe_format(rsi, ':.1f')}\n"
+            msg += f"**{name}** ({symbol}): ${float(price):.2f}  |  RSI(14): {float(rsi):.1f}\n"
         else:
             msg += f"**{name}**: данные недоступны\n"
     msg += "\n📰 **Новостной фон:**\n"
@@ -868,7 +868,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for s in sigs:
                 if not s['closed']:
                     direction = "BUY" if s['signal'] == "BUY" else "SELL"
-                    msg += f"{name} {tf} {s['type']}: {direction} (вход {s['levels']['price']})\n"
+                    msg += f"{name} {tf} {s['type']}: {direction} (вход {s['levels']['price']:.2f})\n"
     if msg == "📌 Активные сигналы:\n":
         msg += "Нет активных сигналов."
     await update.message.reply_text(msg)
@@ -884,7 +884,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
     if price is None:
         await update.message.reply_text(f"❌ Не удалось получить цену для {asset_name}")
         return
-    msg += f"Цена: ${safe_format(price)}\n\n"
+    msg += f"Цена: ${float(price):.2f}\n\n"
     for tf in ASSET_TIMEFRAMES[asset_name]:
         msg += f"⏱ {tf}\n"
         sigs = active_signals.get(asset_name, {}).get(tf, [])
@@ -896,7 +896,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
                 direction = "покупку" if s['signal'] == "BUY" else "продажу"
                 stars = get_signal_stars(s['type'])
                 msg += f"  {stars} {s['type'].upper()} на {direction}\n"
-                msg += f"    Вход: {safe_format(s['levels']['price'])} | SL: {safe_format(s['levels']['sl'])} | TP1: {safe_format(s['levels']['tp1'])}\n"
+                msg += f"    Вход: {s['levels']['price']:.2f} | SL: {s['levels']['sl']:.2f} | TP1: {s['levels']['tp1']:.2f}\n"
         msg += "\n"
     await update.message.reply_text(msg)
 
@@ -924,7 +924,7 @@ async def status(update, context):
         for tf in ASSET_TIMEFRAMES[name]:
             sigs = [s for s in active_signals.get(name, {}).get(tf, []) if not s['closed']]
             for s in sigs:
-                msg += f"{name} {tf} {s['type']}: {s['signal']} (вход {s['levels']['price']})\n"
+                msg += f"{name} {tf} {s['type']}: {s['signal']} (вход {s['levels']['price']:.2f})\n"
     if msg == "📌 АКТИВНЫЕ СИГНАЛЫ:\n\n":
         msg += "Нет активных сигналов."
     await update.message.reply_text(msg)
