@@ -413,7 +413,7 @@ def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50)
         return None
 
 # ============================================================
-# ИСПРАВЛЕННЫЕ ФУНКЦИИ РАСЧЁТА УРОВНЕЙ С ОКРУГЛЕНИЕМ
+# ФУНКЦИИ РАСЧЁТА УРОВНЕЙ С ОКРУГЛЕНИЕМ
 # ============================================================
 def calculate_levels(price, high, low, signal_type):
     buffer = 2.0
@@ -430,7 +430,6 @@ def calculate_levels(price, high, low, signal_type):
             sl = price + min_stop
         tp1 = price - (sl - price)
         tp2 = price - 2*(sl - price)
-    # Округление до 2 знаков
     sl = round(sl, 2)
     tp1 = round(tp1, 2)
     tp2 = round(tp2, 2)
@@ -447,7 +446,6 @@ def calculate_atr_levels(price, atr, signal_type):
         tp1 = price - atr * TP1_MULT
         tp2 = price - atr * TP2_MULT
         tp3 = price - atr * TP3_MULT
-    # Округление до 2 знаков
     sl = round(sl, 2)
     tp1 = round(tp1, 2)
     tp2 = round(tp2, 2)
@@ -506,7 +504,12 @@ def check_signal(asset_name, interval):
             elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                 rsi_signal = "SELL"
             if rsi_signal and rsi_signal != tf_data["rsi_signal"]:
-                sl, tp1, tp2, _ = calculate_levels(price, high, low, rsi_signal)
+                # === ИЗМЕНЕНИЕ: используем ATR для RSI ===
+                atr = get_atr_value(symbol, interval)
+                if atr is not None:
+                    sl, tp1, tp2, _ = calculate_atr_levels(price, atr, rsi_signal)
+                else:
+                    sl, tp1, tp2, _ = calculate_levels(price, high, low, rsi_signal)
                 rsi_levels = {'price': price, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'rsi': current_rsi}
                 tf_data["rsi_signal"] = rsi_signal
                 tf_data["rsi_levels"] = rsi_levels
@@ -988,7 +991,7 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                 msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}"
+                msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"   # <-- ИСПРАВЛЕНО
                 atr_val = get_atr_value(symbol, tf)
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1100,7 +1103,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                     msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                     msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                    msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"
+                    msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"   # <-- ИСПРАВЛЕНО
                     atr_val = get_atr_value(ASSETS[name]["symbol"], tf)
                     df = get_klines(ASSETS[name]["symbol"], interval=tf, limit=10)
                     volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
