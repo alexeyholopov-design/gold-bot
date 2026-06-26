@@ -46,7 +46,7 @@ ASSET_TIMEFRAMES = {
 }
 
 ASSETS = {
-    "GOLD": {"symbol": "XAUUSDT+"},   # Bybit TradFi
+    "GOLD": {"symbol": "XAUT-USDT"},
     "BTC":  {"symbol": "BTC-USDT"},
     "ETH":  {"symbol": "ETH-USDT"},
     "SOL":  {"symbol": "SOL-USDT"},
@@ -72,7 +72,6 @@ ATR_MULTIPLIERS = {
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
 }
 
-# ---------- Вспомогательные функции ----------
 def safe_format(value, format_spec=":.2f"):
     try:
         if value is None:
@@ -233,39 +232,21 @@ RSI (14): {rsi_str}
         return None
 
 # ---------- Рыночные данные ----------
-def get_bybit_klines(symbol, interval, limit=100):
-    interval_map = {"5m": "5", "15m": "15", "1h": "60"}
-    bybit_interval = interval_map.get(interval, "15")
+def get_current_price(symbol):
     try:
-        url = "https://api.bybit.com/v5/market/kline"
-        params = {
-            "category": "spot",
-            "symbol": symbol,
-            "interval": bybit_interval,
-            "limit": limit
-        }
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        if resp.status_code != 200:
+        url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
+        params = {"symbol": symbol}
+        response = requests.get(url, params=params, timeout=5)
+        if response.status_code != 200:
             return None
-        data = resp.json()
-        if data.get("retCode") != 0:
-            return None
-        candles = data["result"]["list"]
-        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
-        df = df.iloc[::-1]
-        df['Open'] = pd.to_numeric(df['open'])
-        df['High'] = pd.to_numeric(df['high'])
-        df['Low'] = pd.to_numeric(df['low'])
-        df['Close'] = pd.to_numeric(df['close'])
-        df['Volume'] = pd.to_numeric(df['volume'])
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        data = response.json()
+        if data.get("code") == 0:
+            return float(data["data"]["price"])
+        return None
     except:
         return None
 
 def get_klines(symbol, interval, limit=100):
-    if symbol == "XAUUSDT+":
-        return get_bybit_klines(symbol, interval, limit)
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -282,32 +263,6 @@ def get_klines(symbol, interval, limit=100):
         for col in ["Open", "High", "Low", "Close"]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         return df.dropna(subset=["Open", "High", "Low", "Close"])
-    except:
-        return None
-
-def get_current_price(symbol):
-    if symbol == "XAUUSDT+":
-        try:
-            url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=XAUUSDT+"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            resp = requests.get(url, headers=headers, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("retCode") == 0:
-                    return float(data["result"]["list"][0]["lastPrice"])
-        except:
-            pass
-        return None
-    try:
-        url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
-        params = {"symbol": symbol}
-        response = requests.get(url, params=params, timeout=5)
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        if data.get("code") == 0:
-            return float(data["data"]["price"])
-        return None
     except:
         return None
 
@@ -747,7 +702,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = "включена" if SEND_TO_CHANNEL else "приостановлена"
     await update.message.reply_text(
         "👋 Бот запущен!\n"
-        "Отслеживаю: GOLD (TradFi Bybit), BTC, ETH, SOL (BingX).\n"
+        "Отслеживаю: GOLD (XAUT-USDT BingX), BTC, ETH, SOL.\n"
+        "⚠️ Цена золота может незначительно отличаться от мировых рынков (∼$10).\n"
         "Таймфреймы: GOLD (5м, 15м), крипта (15м, 1ч).\n"
         "⭐ FAST EMA | ⭐⭐ RSI/EMA | ⭐⭐⭐ Combined\n"
         "📰 Новости каждый час. Утренний обзор в 10:00 МСК.\n"
