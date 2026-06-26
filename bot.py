@@ -477,13 +477,17 @@ def update_signal_event(asset_name, tf, signal_type, event_type, value):
     for entry in reversed(signal_history):
         if entry["asset"] == asset_name and entry["tf"] == tf and entry["type"] == signal_type and not entry["closed"]:
             if event_type == "tp1":
-                entry["tp1_hit"] = True; entry["closed"] = True
+                entry["tp1_hit"] = True
+                entry["closed"] = True
             elif event_type == "tp2":
-                entry["tp2_hit"] = True; entry["closed"] = True
+                entry["tp2_hit"] = True
+                entry["closed"] = True
             elif event_type == "tp3":
-                entry["tp3_hit"] = True; entry["closed"] = True
+                entry["tp3_hit"] = True
+                entry["closed"] = True
             elif event_type == "sl":
-                entry["sl_hit"] = True; entry["closed"] = True
+                entry["sl_hit"] = True
+                entry["closed"] = True
             break
 
 def check_signal(asset_name, interval):
@@ -504,7 +508,7 @@ def check_signal(asset_name, interval):
             elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                 rsi_signal = "SELL"
             if rsi_signal and rsi_signal != tf_data["rsi_signal"]:
-                # === ИЗМЕНЕНИЕ: используем ATR для RSI ===
+                # Используем ATR для RSI
                 atr = get_atr_value(symbol, interval)
                 if atr is not None:
                     sl, tp1, tp2, _ = calculate_atr_levels(price, atr, rsi_signal)
@@ -582,6 +586,9 @@ def check_signal(asset_name, interval):
         return (None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None)
 
+# ============================================================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УРОВНЕЙ (РАБОТАЕТ ДЛЯ BUY И SELL)
+# ============================================================
 async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels, sent_flag):
     if not levels:
         return
@@ -591,41 +598,70 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
         if price is None:
             print(f"❌ Не удалось получить цену для {asset_name}")
             return
-        if levels.get('tp1') is not None:
-            is_buy = levels['price'] < levels['tp1']
-        else:
-            is_buy = levels['price'] > levels['sl']
+
+        # Определяем направление: BUY, если TP1 > цена входа, иначе SELL
+        is_buy = levels.get('tp1') is not None and levels['price'] < levels['tp1']
+
+        # Проверка SL (если не закрыт по TP)
         if not levels.get('tp1_hit', False) and not levels.get('tp2_hit', False) and not levels.get('tp3_hit', False):
             if not levels.get('sl_hit', False):
+                sl_hit = False
                 if is_buy and price <= levels['sl']:
+                    sl_hit = True
+                elif not is_buy and price >= levels['sl']:
+                    sl_hit = True
+                if sl_hit:
                     levels['sl_hit'] = True
                     update_signal_event(asset_name, interval, signal_type, "sl", price)
                     msg = f"❌ Стоп-лосс сработал по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nSL: ${safe_format(levels['sl'])}"
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о SL для {asset_name} {interval}")
                     return
+
+        # Проверка TP (если SL не сработал)
         if not levels.get('sl_hit', False):
+            # TP1
             if levels.get('tp1') is not None and not levels.get('tp1_hit', False):
+                tp1_hit = False
                 if is_buy and price >= levels['tp1']:
+                    tp1_hit = True
+                elif not is_buy and price <= levels['tp1']:
+                    tp1_hit = True
+                if tp1_hit:
                     levels['tp1_hit'] = True
                     update_signal_event(asset_name, interval, signal_type, "tp1", price)
                     msg = f"✅ TP1 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP1: ${safe_format(levels['tp1'])}"
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о TP1 для {asset_name} {interval}")
+
+            # TP2
             if levels.get('tp2') is not None and not levels.get('tp2_hit', False):
+                tp2_hit = False
                 if is_buy and price >= levels['tp2']:
+                    tp2_hit = True
+                elif not is_buy and price <= levels['tp2']:
+                    tp2_hit = True
+                if tp2_hit:
                     levels['tp2_hit'] = True
                     update_signal_event(asset_name, interval, signal_type, "tp2", price)
                     msg = f"✅ TP2 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP2: ${safe_format(levels['tp2'])}"
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о TP2 для {asset_name} {interval}")
+
+            # TP3
             if levels.get('tp3') is not None and not levels.get('tp3_hit', False):
+                tp3_hit = False
                 if is_buy and price >= levels['tp3']:
+                    tp3_hit = True
+                elif not is_buy and price <= levels['tp3']:
+                    tp3_hit = True
+                if tp3_hit:
                     levels['tp3_hit'] = True
                     update_signal_event(asset_name, interval, signal_type, "tp3", price)
                     msg = f"✅ TP3 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP3: ${safe_format(levels['tp3'])}"
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о TP3 для {asset_name} {interval}")
+
     except Exception as e:
         print(f"❌ Ошибка в check_and_notify_levels для {asset_name} {interval} {signal_type}: {e}")
         import traceback
@@ -991,7 +1027,7 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                 msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"   # <-- ИСПРАВЛЕНО
+                msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"
                 atr_val = get_atr_value(symbol, tf)
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1103,7 +1139,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                     msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                     msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                    msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"   # <-- ИСПРАВЛЕНО
+                    msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"
                     atr_val = get_atr_value(ASSETS[name]["symbol"], tf)
                     df = get_klines(ASSETS[name]["symbol"], interval=tf, limit=10)
                     volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
