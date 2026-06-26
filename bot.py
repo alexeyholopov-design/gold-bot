@@ -1,4 +1,4 @@
-import os, time, threading, random, asyncio, requests, json, uuid, feedparser
+import os, time, threading, random, asyncio, requests, json, uuid, feedparser, hmac, hashlib, urllib.parse
 import pandas as pd
 import numpy as np
 from flask import Flask
@@ -19,6 +19,9 @@ SEND_TO_CHANNEL = True
 
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
+
+BYBIT_API_KEY = os.environ.get('BYBIT_API_KEY', '')
+BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', '')
 
 MSK = timezone(timedelta(hours=3))
 
@@ -45,8 +48,11 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
+# Символ GOLD будет определён после проверки доступа к Bybit
+GOLD_SYMBOL = "XAUT-USDT"  # По умолчанию BingX
+
 ASSETS = {
-    "GOLD": {"symbol": "XAUT-USDT"},
+    "GOLD": {"symbol": GOLD_SYMBOL},
     "BTC":  {"symbol": "BTC-USDT"},
     "ETH":  {"symbol": "ETH-USDT"},
     "SOL":  {"symbol": "SOL-USDT"},
@@ -85,6 +91,95 @@ def safe_format(value, format_spec=":.2f"):
 
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
+
+# ---------- Bybit TradFi проверка доступа и функции ----------
+def bybit_sign_request(params):
+    """Подписывает параметры для Bybit API (HMAC)"""
+    timestamp = str(int(time.time() * 1000))
+    recv_window = "5000"
+    param_str = urllib.parse.urlencode(sorted(params.items()))
+    sign_str = f"{timestamp}{BYBIT_API_KEY}{recv_window}{param_str}"
+    signature = hmac.new(
+        bytes(BYBIT_API_SECRET, "utf-8"),
+        bytes(sign_str, "utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    headers = {
+        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-RECV-WINDOW": recv_window,
+    }
+    return headers
+
+def check_bybit_tradfi():
+    """Проверяет доступ к XAUUSDT+ (TradFi) и возвращает True при успехе"""
+    global GOLD_SYMBOL
+    if not BYBIT_API_KEY or not BYBIT_API_SECRET:
+        print("⚠️ Ключи Bybit не заданы, GOLD будет работать через BingX")
+        return False
+    try:
+        params = {"category": "tradfi", "symbol": "XAUUSDT+"}
+        headers = bybit_sign_request(params)
+        url = "https://api.bybit.com/v5/market/tickers"
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        data = resp.json()
+        if data.get("retCode") == 0 and data.get("result", {}).get("list"):
+            price = float(data["result"]["list"][0]["lastPrice"])
+            print(f"✅ Доступ к Bybit TradFi подтверждён. Цена XAUUSDT+: ${price:.2f}")
+            GOLD_SYMBOL = "XAUUSDT+"
+            ASSETS["GOLD"]["symbol"] = GOLD_SYMBOL
+            return True
+        else:
+            print(f"❌ Ошибка доступа к Bybit TradFi: {data.get('retMsg', 'Unknown error')}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка проверки Bybit TradFi: {e}")
+        return False
+
+def get_bybit_price(symbol):
+    try:
+        params = {"category": "tradfi", "symbol": symbol}
+        headers = bybit_sign_request(params)
+        url = "https://api.bybit.com/v5/market/tickers"
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("retCode") == 0:
+                return float(data["result"]["list"][0]["lastPrice"])
+    except:
+        pass
+    return None
+
+def get_bybit_klines(symbol, interval, limit=100):
+    interval_map = {"5m": "5", "15m": "15", "1h": "60"}
+    bybit_interval = interval_map.get(interval, "15")
+    try:
+        params = {
+            "category": "tradfi",
+            "symbol": symbol,
+            "interval": bybit_interval,
+            "limit": limit
+        }
+        headers = bybit_sign_request(params)
+        url = "https://api.bybit.com/v5/market/kline"
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("retCode") != 0:
+            return None
+        candles = data["result"]["list"]
+        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+        df = df.iloc[::-1]
+        df['Open'] = pd.to_numeric(df['open'])
+        df['High'] = pd.to_numeric(df['high'])
+        df['Low'] = pd.to_numeric(df['low'])
+        df['Close'] = pd.to_numeric(df['close'])
+        df['Volume'] = pd.to_numeric(df['volume'])
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    except:
+        return None
 
 # ---------- GigaChat ----------
 async def get_gigachat_token(force=False):
@@ -233,6 +328,10 @@ RSI (14): {rsi_str}
 
 # ---------- Рыночные данные ----------
 def get_current_price(symbol):
+    # Если включён Bybit TradFi и символ золото – используем Bybit
+    if GOLD_SYMBOL == "XAUUSDT+" and symbol == "XAUUSDT+":
+        return get_bybit_price(symbol)
+    # Иначе BingX
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
         params = {"symbol": symbol}
@@ -247,6 +346,8 @@ def get_current_price(symbol):
         return None
 
 def get_klines(symbol, interval, limit=100):
+    if GOLD_SYMBOL == "XAUUSDT+" and symbol == "XAUUSDT+":
+        return get_bybit_klines(symbol, interval, limit)
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -700,10 +801,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
     status_msg = "включена" if SEND_TO_CHANNEL else "приостановлена"
+    gold_source = "Bybit TradFi" if GOLD_SYMBOL == "XAUUSDT+" else "BingX (возможно расхождение ~$10)"
     await update.message.reply_text(
         "👋 Бот запущен!\n"
-        "Отслеживаю: GOLD (XAUT-USDT BingX), BTC, ETH, SOL.\n"
-        "⚠️ Цена золота может незначительно отличаться от мировых рынков (∼$10).\n"
+        f"Отслеживаю: GOLD ({gold_source}), BTC, ETH, SOL.\n"
         "Таймфреймы: GOLD (5м, 15м), крипта (15м, 1ч).\n"
         "⭐ FAST EMA | ⭐⭐ RSI/EMA | ⭐⭐⭐ Combined\n"
         "📰 Новости каждый час. Утренний обзор в 10:00 МСК.\n"
@@ -821,9 +922,15 @@ def run_bot():
         print("🧠 GigaChat AI включён")
     else:
         print("⚠️ GigaChat AI отключён")
+
+    # Проверка доступа к Bybit TradFi
+    check_bybit_tradfi()
+
     print("📋 Конфигурация таймфреймов:")
     for asset, tfs in ASSET_TIMEFRAMES.items():
         print(f"  {asset}: {tfs}")
+    print(f"ℹ️ GOLD источник: {GOLD_SYMBOL}")
+
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
