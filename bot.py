@@ -22,7 +22,6 @@ if not TOKEN:
 
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
-# === GigaChat ===
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
 
@@ -42,7 +41,7 @@ gigachat_token_expires = 0
 
 news_sentiment = {}
 LAST_NEWS_UPDATE = 0
-NEWS_UPDATE_INTERVAL = 3600  # 1 час
+NEWS_UPDATE_INTERVAL = 3600
 
 TIMEFRAMES = ["5m", "15m"]
 
@@ -77,7 +76,6 @@ LOOKBACK = 50
 BARS_FOR_LEVELS = 10
 EMA_FAST = 20
 EMA_SLOW = 50
-
 EMA_FAST_FAST = 3
 EMA_SLOW_FAST = 10
 SL_MULT = 1.2
@@ -85,15 +83,11 @@ TP1_MULT = 1.5
 TP2_MULT = 2.0
 TP3_MULT = 3.0
 
-# ============================================================
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ БЕЗОПАСНОГО ФОРМАТИРОВАНИЯ
-# ============================================================
+# === Безопасное форматирование ===
 def safe_format(value, format_spec=":.2f"):
-    """Преобразует число в строку с заданным форматом, обрабатывая None и np.float64."""
     try:
         if value is None:
             return "0.00"
-        # Преобразуем в float, чтобы отбросить numpy-тип
         num = float(value)
         if np.isnan(num) or not np.isfinite(num):
             return "0.00"
@@ -101,9 +95,6 @@ def safe_format(value, format_spec=":.2f"):
     except (ValueError, TypeError):
         return str(value)
 
-# ============================================================
-# ФУНКЦИЯ ДЛЯ КРАСИВЫХ ЛОГОВ
-# ============================================================
 def format_levels_for_log(levels):
     if not levels:
         return "{}"
@@ -122,8 +113,7 @@ def get_signal_stars(signal_type):
         return "⭐⭐"
     elif signal_type == "combined":
         return "⭐⭐⭐"
-    else:
-        return ""
+    return ""
 
 # === GigaChat ===
 async def get_gigachat_token():
@@ -242,7 +232,6 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"❌ Ошибка в update_news_sentiment: {e}")
 
-# === AI анализ ===
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
                           atr=None, volume=None, higher_trend=None):
     if not GIGACHAT_AUTH_KEY:
@@ -423,6 +412,9 @@ def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50)
     else:
         return None
 
+# ============================================================
+# ИСПРАВЛЕННЫЕ ФУНКЦИИ РАСЧЁТА УРОВНЕЙ С ОКРУГЛЕНИЕМ
+# ============================================================
 def calculate_levels(price, high, low, signal_type):
     buffer = 2.0
     min_stop = 5.0
@@ -438,6 +430,10 @@ def calculate_levels(price, high, low, signal_type):
             sl = price + min_stop
         tp1 = price - (sl - price)
         tp2 = price - 2*(sl - price)
+    # Округление до 2 знаков
+    sl = round(sl, 2)
+    tp1 = round(tp1, 2)
+    tp2 = round(tp2, 2)
     return sl, tp1, tp2, None
 
 def calculate_atr_levels(price, atr, signal_type):
@@ -451,6 +447,11 @@ def calculate_atr_levels(price, atr, signal_type):
         tp1 = price - atr * TP1_MULT
         tp2 = price - atr * TP2_MULT
         tp3 = price - atr * TP3_MULT
+    # Округление до 2 знаков
+    sl = round(sl, 2)
+    tp1 = round(tp1, 2)
+    tp2 = round(tp2, 2)
+    tp3 = round(tp3, 2)
     return sl, tp1, tp2, tp3
 
 def record_signal_event(asset_name, tf, signal_type, signal, price, sl=None, tp1=None, tp2=None, tp3=None, ai_analysis=None):
@@ -582,7 +583,6 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
     if not levels:
         return
     try:
-        # Лог с форматированием
         print(f"🔍 Проверка уровней для {asset_name} {interval} {signal_type}: {format_levels_for_log(levels)}")
         price = get_current_price(ASSETS[asset_name]["symbol"])
         if price is None:
@@ -1075,7 +1075,7 @@ async def send_current_signals(context):
                 tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
-# === Автоматическая проверка (с обработкой ошибок) ===
+# === Автоматическая проверка ===
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     print("⏰ Запущена автоматическая проверка...")
     if CHANNEL_ID is None and chat_id is None:
@@ -1187,7 +1187,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     tf_data["fast_ema_sent"] = fast_signal
                     record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
-                # Проверка уровней для всех типов
+                # Проверка уровней
                 if tf_data.get("rsi_levels"):
                     await check_and_notify_levels(context.bot, name, tf, "rsi", tf_data["rsi_levels"], tf_data.get("rsi_sent"))
                 if tf_data.get("ema_levels"):
@@ -1208,25 +1208,21 @@ async def start_scheduler(app):
     if job_queue is None:
         print("⚠️ JobQueue не доступен. Установите apscheduler.")
         return
-    # Очищаем старые задачи
     for job in job_queue.jobs():
         job.schedule_removal()
-    # Проверка сигналов каждую минуту
     job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
-    # Ежедневный отчёт в 21:00 МСК
     job_queue.run_daily(daily_report_task, time=dt_time(hour=21, minute=0), days=tuple(range(7)))
-    # Воскресный отчёт в 18:00 МСК
     job_queue.run_daily(weekly_report_task, time=dt_time(hour=18, minute=0), days=(6,))
-    # Утренний обзор в 10:00 МСК
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0), days=tuple(range(7)))
-    # Обновление новостей каждые 3600 секунд
     job_queue.run_repeating(update_news_sentiment, interval=NEWS_UPDATE_INTERVAL, first=30)
     print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 21:00, по воскресеньям в 18:00, утренний обзор в 10:00)")
 
 async def post_init(app):
     await start_scheduler(app)
 
-# === Запуск ===
+# ================================================================
+# ЗАПУСК
+# ================================================================
 def run_bot():
     print("🤖 Бот запускается...")
     if GIGACHAT_AUTH_KEY:
@@ -1235,7 +1231,17 @@ def run_bot():
     else:
         print("⚠️ GigaChat AI отключён (ключ не задан или пустой)")
 
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    print("🔄 Создаю Application...")
+    try:
+        app = Application.builder().token(TOKEN).post_init(post_init).build()
+        print("✅ Application создан успешно.")
+    except Exception as e:
+        print(f"❌ Ошибка при создании Application: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    print("🔄 Добавляю обработчики команд...")
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
     app.add_handler(CommandHandler("btc", btc))
@@ -1245,6 +1251,7 @@ def run_bot():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("today", today_report))
     app.add_handler(CommandHandler("ai", ai_command))
+    print("✅ Обработчики добавлены.")
 
     print("🧪 Тестируем подключение к BingX...")
     for name in ASSETS:
