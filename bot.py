@@ -23,6 +23,7 @@ if not TOKEN:
     raise ValueError("TOKEN environment variable not set")
 
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
+SEND_TO_CHANNEL = True   # флаг отправки в канал
 
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
@@ -273,7 +274,7 @@ RSI (14): {rsi_str}
 
 async def validate_levels_with_ai(asset_name, tf, signal_type, price, levels):
     """Проверка адекватности рассчитанных целей через GigaChat (только для старших ТФ)"""
-    if tf not in ["1h", "15m"]:  # для примера проверяем 1h и 15m
+    if tf not in ["1h", "15m"]:
         return levels, False
     if not GIGACHAT_AUTH_KEY:
         return levels, False
@@ -300,7 +301,6 @@ ATR: {levels.get('atr', 'N/A')}
         resp = resp.strip()
         if "no_change" in resp:
             return levels, False
-        # Парсим JSON (упрощённо, без обработки ошибок, но в реальном коде нужен try)
         new_levels = json.loads(resp)
         for key in ['sl', 'tp1', 'tp2', 'tp3']:
             if key in new_levels and isinstance(new_levels[key], (int, float)):
@@ -803,7 +803,7 @@ class FakeContext:
 
 async def send_to_chat(context, text):
     try:
-        if CHANNEL_ID is not None:
+        if CHANNEL_ID is not None and SEND_TO_CHANNEL:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
         if chat_id is not None:
             await context.bot.send_message(chat_id=chat_id, text=text)
@@ -811,6 +811,17 @@ async def send_to_chat(context, text):
             print("⚠️ Нет получателя для сообщения")
     except Exception as e:
         print(f"❌ Ошибка в send_to_chat: {e}")
+
+# ---------- Команды управления каналом ----------
+async def channel_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global SEND_TO_CHANNEL
+    SEND_TO_CHANNEL = True
+    await update.message.reply_text("✅ Отправка в канал включена.")
+
+async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global SEND_TO_CHANNEL
+    SEND_TO_CHANNEL = False
+    await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
 # ---------- Планировщик ----------
 async def start_scheduler(app):
@@ -863,18 +874,22 @@ async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
+    status_msg = "включена" if SEND_TO_CHANNEL else "приостановлена"
     await update.message.reply_text(
         "👋 Бот запущен!\n"
         "Отслеживаю: GOLD, BTC, ETH, SOL.\n"
         "Таймфреймы: GOLD (5м, 15м), крипта (15м, 1ч).\n"
         "⭐ FAST EMA | ⭐⭐ RSI/EMA | ⭐⭐⭐ Combined\n"
-        "📰 Новости каждый час. Утренний обзор в 10:00 МСК.\n\n"
+        "📰 Новости каждый час. Утренний обзор в 10:00 МСК.\n"
+        f"📢 Отправка в канал: {status_msg}\n\n"
         "Команды:\n"
         "/gold, /btc, /eth, /sol – цена и активные сигналы\n"
         "/crypto – сводка\n"
         "/status – активные сигналы\n"
         "/today – отчёт за сегодня\n"
-        "/ai {актив} – AI-анализ"
+        "/ai {актив} – AI-анализ\n"
+        "/channel_on – включить канал\n"
+        "/channel_off – приостановить канал"
     )
     msg = "📌 Активные сигналы:\n"
     for name in ASSETS:
@@ -996,6 +1011,8 @@ def run_bot():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("today", today_report))
     app.add_handler(CommandHandler("ai", ai_command))
+    app.add_handler(CommandHandler("channel_on", channel_on))
+    app.add_handler(CommandHandler("channel_off", channel_off))
     print("✅ Бот готов")
     app.run_polling(drop_pending_updates=True)
 
