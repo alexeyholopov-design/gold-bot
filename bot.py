@@ -116,9 +116,9 @@ def get_signal_stars(signal_type):
     return ""
 
 # === GigaChat ===
-async def get_gigachat_token():
+async def get_gigachat_token(force=False):
     global gigachat_token, gigachat_token_expires
-    if gigachat_token and time.time() < gigachat_token_expires:
+    if not force and gigachat_token and time.time() < gigachat_token_expires:
         return gigachat_token
     if not GIGACHAT_AUTH_KEY:
         print("❌ GIGACHAT_AUTH_KEY не задан")
@@ -171,6 +171,26 @@ async def ask_gigachat(prompt):
                 return data["choices"][0]["message"]["content"].strip()
             else:
                 print(f"❌ Неожиданный ответ GigaChat: {data}")
+                return None
+        elif response.status_code == 401:
+            # Токен истёк, обновляем и пробуем ещё раз
+            print("⚠️ Токен GigaChat истёк, обновляем...")
+            new_token = await get_gigachat_token(force=True)
+            if new_token:
+                headers["Authorization"] = f"Bearer {new_token}"
+                response = requests.post(url, headers=headers, json=payload, verify=False, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "choices" in data and len(data["choices"]) > 0:
+                        return data["choices"][0]["message"]["content"].strip()
+                    else:
+                        print(f"❌ Неожиданный ответ GigaChat после обновления: {data}")
+                        return None
+                else:
+                    print(f"❌ Ошибка GigaChat API после обновления: {response.status_code} {response.text}")
+                    return None
+            else:
+                print("❌ Не удалось обновить токен GigaChat")
                 return None
         else:
             print(f"❌ Ошибка GigaChat API: {response.status_code} {response.text}")
@@ -508,7 +528,6 @@ def check_signal(asset_name, interval):
             elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                 rsi_signal = "SELL"
             if rsi_signal and rsi_signal != tf_data["rsi_signal"]:
-                # Используем ATR для RSI
                 atr = get_atr_value(symbol, interval)
                 if atr is not None:
                     sl, tp1, tp2, _ = calculate_atr_levels(price, atr, rsi_signal)
