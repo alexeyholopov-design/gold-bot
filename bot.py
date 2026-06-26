@@ -473,14 +473,14 @@ def create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis=
         'tf': tf,
         'type': signal_type,
         'signal': signal,
-        'levels': levels.copy(),   # копия, чтобы не менять оригинал
+        'levels': levels.copy(),
         'tp1_hit': False,
         'tp2_hit': False,
         'tp3_hit': False,
         'sl_hit': False,
         'closed': False,
         'ai_analysis': ai_analysis,
-        'adjusted_by_ai': False    # флаг, что цели скорректированы AI
+        'adjusted_by_ai': False
     }
 
 # ---------- Добавление сигнала в активные ----------
@@ -489,8 +489,6 @@ def add_active_signal(asset_name, tf, signal_dict):
         active_signals[asset_name] = {}
     if tf not in active_signals[asset_name]:
         active_signals[asset_name][tf] = []
-    # Проверяем, нет ли уже такого же сигнала (по типу и направлению) который не закрыт
-    # Не добавляем дубль, но можно и добавлять — оставим возможность нескольких входов
     active_signals[asset_name][tf].append(signal_dict)
 
 # ---------- Проверка уровней для одного сигнала ----------
@@ -524,7 +522,7 @@ async def check_signal_levels(bot, signal_dict):
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
                 signal_dict['tp1_hit'] = True
-                signal_dict['closed'] = True   # закрываем после TP1
+                signal_dict['closed'] = True
                 msg = (f"✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${safe_format(levels['price'])}\nTP1: ${safe_format(levels['tp1'])}")
                 await send_to_chat(FakeContext(bot), msg)
@@ -554,34 +552,40 @@ async def check_signal_levels(bot, signal_dict):
 async def check_all_active_signals(bot):
     for asset_name, tf_dict in active_signals.items():
         for tf, signals in tf_dict.items():
-            for sig in signals[:]:  # итерируемся по копии списка
+            for sig in signals[:]:
                 await check_signal_levels(bot, sig)
                 if sig['closed']:
-                    # перемещаем в историю и удаляем из активных
                     signal_history.append(sig)
                     signals.remove(sig)
+
+# ---------- Вспомогательная функция: проверка открытого сигнала такого же типа и направления ----------
+def has_open_signal(asset_name, tf, signal_type, direction):
+    sigs = active_signals.get(asset_name, {}).get(tf, [])
+    for s in sigs:
+        if not s['closed'] and s['type'] == signal_type and s['signal'] == direction:
+            return True
+    return False
 
 # ---------- Генерация и отправка нового сигнала ----------
 async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None, ema_fast=None, ema_slow=None,
                             cur_fast3=None, cur_slow10=None, atr=None, higher_trend=None, context=None):
+    # Проверка на дубликат
+    if has_open_signal(asset_name, tf, signal_type, signal):
+        return
+
     levels = calculate_atr_levels(price, atr, signal, tf)
-    # Опциональная AI-валидация для старших ТФ
     adjusted = False
     if tf in ["1h", "15m"] and GIGACHAT_AUTH_KEY:
         levels, adjusted = await validate_levels_with_ai(asset_name, tf, signal_type, price, levels)
 
-    # AI-анализ сигнала
     ai_analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi,
                                         ema_fast=ema_fast, ema_slow=ema_slow,
                                         atr=atr, higher_trend=higher_trend)
-    # Создаём запись сигнала
+
     signal_dict = create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis)
     signal_dict['adjusted_by_ai'] = adjusted
-
-    # Добавляем в активные
     add_active_signal(asset_name, tf, signal_dict)
 
-    # Формируем текст уведомления
     stars = get_signal_stars(signal_type)
     direction = "покупку" if signal == "BUY" else "продажу"
     symbol = ASSETS[asset_name]['symbol']
@@ -605,20 +609,21 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
 
 # ---------- Проверка рыночных условий и генерация сигналов ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
-    print("⏰ Запущена автоматическая проверка...")
+    print("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
-        print("⏰ Нет получателей – пропускаем")
+        print("⚠️ Нет получателей")
         return
 
     for name, asset in ASSETS.items():
         symbol = asset['symbol']
         for tf in ASSET_TIMEFRAMES[name]:
+            price = get_current_price(symbol)
+            print(f"🔎 {name} {tf} | цена: {price}")
+            if price is None:
+                continue
             try:
-                price = get_current_price(symbol)
-                if price is None:
-                    continue
                 current_rsi, prev_rsi, high, low = get_rsi_and_bars(symbol, tf)
-                # RSI сигнал
+                # RSI
                 rsi_signal = None
                 if current_rsi is not None and prev_rsi is not None:
                     if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD:
@@ -638,7 +643,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                         await handle_new_signal(name, tf, "ema", ema_signal, price,
                                                 ema_fast=cur_fast, ema_slow=cur_slow, atr=atr, context=context)
 
-                # Combined (RSI + EMA)
+                # Combined
                 combined_signal = None
                 if rsi_signal and ema_signal:
                     if rsi_signal == "BUY" and cur_fast > cur_slow:
@@ -654,7 +659,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 # FAST EMA (3/10)
                 fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, tf, EMA_FAST_FAST, EMA_SLOW_FAST)
                 if fast_cross:
-                    # Проверка тренда на старшем ТФ
                     higher_tf = "1h" if tf == "15m" else "15m" if tf != "1h" else None
                     trend_ok = True
                     if higher_tf:
@@ -667,11 +671,9 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                             await handle_new_signal(name, tf, "fast_ema", fast_cross, price,
                                                     cur_fast3=cur_fast3, cur_slow10=cur_slow10, atr=atr,
                                                     higher_trend=trend if higher_tf else None, context=context)
-
             except Exception as e:
                 print(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
 
-    # Проверяем уровни для всех активных сигналов
     await check_all_active_signals(context.bot)
 
 # ---------- Отчёты ----------
@@ -679,7 +681,6 @@ def get_moscow_time():
     return datetime.now(timezone.utc) + timedelta(hours=3)
 
 def calculate_stats(signals):
-    """Возвращает словарь со статистикой по сигналам из списка"""
     total = len(signals)
     if total == 0:
         return None
@@ -700,9 +701,7 @@ def calculate_stats(signals):
     }
 
 def generate_insights(stats_by_asset, stats_by_type):
-    """Генерирует заметки для отчёта"""
     insights = []
-    # Эффективные инструменты
     best = []
     worst = []
     for asset, st in stats_by_asset.items():
@@ -721,9 +720,8 @@ def generate_insights(stats_by_asset, stats_by_type):
         insights.append("📉 Самые неэффективные:")
         for a, rate, tp1, closed in bottom3:
             insights.append(f"{a} – {rate:.1f}% ({tp1}/{closed})")
-    # Заметки по типам сигналов
     for typ, st in stats_by_type.items():
-        if st['closed'] >= 3:  # минимальная выборка для вывода
+        if st['closed'] >= 3:
             if st['success_rate'] == 100:
                 insights.append(f"💡 {typ.upper()} показал 100% попаданий ({st['tp1']} из {st['closed']}), но выборка мала.")
             elif st['success_rate'] == 0:
@@ -757,11 +755,10 @@ def format_report(signals, title):
     stats_by_type = defaultdict(list)
     for s in signals:
         if not s['closed']:
-            continue   # не учитываем открытые
+            continue
         stats_by_asset[s['asset']].append(s)
         stats_by_type[s['type']].append(s)
 
-    # Общая статистика
     all_stats = calculate_stats([s for s in signals if s['closed']])
     lines = [title, ""]
     if all_stats:
@@ -772,7 +769,6 @@ def format_report(signals, title):
             lines.append("TP2 и TP3 не достигнуты ни разу.")
         lines.append("")
 
-    # По активам
     asset_stats = {}
     for asset, lst in stats_by_asset.items():
         st = calculate_stats(lst)
@@ -783,7 +779,6 @@ def format_report(signals, title):
         lines.append(f"{asset}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
     lines.append("")
 
-    # По типам сигналов
     type_stats = {}
     for typ, lst in stats_by_type.items():
         st = calculate_stats(lst)
@@ -794,7 +789,6 @@ def format_report(signals, title):
         lines.append(f"{typ.upper()}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
     lines.append("")
 
-    # Инсайты
     insights = generate_insights(asset_stats, type_stats)
     if insights:
         lines.append("💡 Заметка:")
@@ -827,17 +821,12 @@ async def start_scheduler(app):
     for job in job_queue.jobs():
         job.schedule_removal()
 
-    # Проверка сигналов каждую минуту
     job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
-    # Ежедневный отчёт в 21:00 МСК
     job_queue.run_daily(lambda ctx: asyncio.create_task(daily_report_job(ctx)),
                         time=dt_time(hour=21, minute=0, tzinfo=MSK), days=tuple(range(7)))
-    # Воскресный отчёт в 18:00 МСК
     job_queue.run_daily(lambda ctx: asyncio.create_task(weekly_report_job(ctx)),
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
-    # Утренний обзор в 10:00 МСК
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
-    # Обновление новостей
     job_queue.run_repeating(update_news_sentiment, interval=NEWS_UPDATE_INTERVAL, first=30)
 
     print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 21:00 МСК, воскресный в 18:00 МСК, утренний обзор в 10:00 МСК)")
@@ -887,7 +876,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today – отчёт за сегодня\n"
         "/ai {актив} – AI-анализ"
     )
-    # Отправим текущие активные сигналы
     msg = "📌 Активные сигналы:\n"
     for name in ASSETS:
         for tf in ASSET_TIMEFRAMES[name]:
@@ -968,9 +956,8 @@ async def ai_command(update, context):
     if asset_name not in ASSETS:
         await update.message.reply_text("Доступны: GOLD, BTC, ETH, SOL")
         return
-    # Анализируем последний активный сигнал
     last_signal = None
-    for tf in reversed(ASSET_TIMEFRAMES[asset_name]):  # сначала старший ТФ
+    for tf in reversed(ASSET_TIMEFRAMES[asset_name]):
         sigs = [s for s in active_signals.get(asset_name, {}).get(tf, []) if not s['closed']]
         if sigs:
             last_signal = sigs[-1]
@@ -991,9 +978,14 @@ async def post_init(app):
 def run_bot():
     print("🤖 Бот запускается...")
     if GIGACHAT_AUTH_KEY:
-        print(f"🧠 GigaChat AI включён")
+        print("🧠 GigaChat AI включён")
     else:
         print("⚠️ GigaChat AI отключён")
+
+    print("📋 Конфигурация таймфреймов:")
+    for asset, tfs in ASSET_TIMEFRAMES.items():
+        print(f"  {asset}: {tfs}")
+
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("gold", gold))
