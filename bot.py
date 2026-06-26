@@ -85,17 +85,35 @@ TP1_MULT = 1.5
 TP2_MULT = 2.0
 TP3_MULT = 3.0
 
-def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
+# ============================================================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ БЕЗОПАСНОГО ФОРМАТИРОВАНИЯ
+# ============================================================
 def safe_format(value, format_spec=":.2f"):
+    """Преобразует число в строку с заданным форматом, обрабатывая None и np.float64."""
     try:
-        return f"{safe_float(value):{format_spec}}"
-    except:
+        if value is None:
+            return "0.00"
+        # Преобразуем в float, чтобы отбросить numpy-тип
+        num = float(value)
+        if np.isnan(num) or not np.isfinite(num):
+            return "0.00"
+        return f"{num:{format_spec}}"
+    except (ValueError, TypeError):
         return str(value)
+
+# ============================================================
+# ФУНКЦИЯ ДЛЯ КРАСИВЫХ ЛОГОВ
+# ============================================================
+def format_levels_for_log(levels):
+    if not levels:
+        return "{}"
+    formatted = {}
+    for k, v in levels.items():
+        if isinstance(v, (float, np.float64)):
+            formatted[k] = f"{v:.2f}"
+        else:
+            formatted[k] = v
+    return formatted
 
 def get_signal_stars(signal_type):
     if signal_type == "fast_ema":
@@ -235,8 +253,8 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
     ema_text = ""
     if ema_fast is not None and ema_slow is not None:
         ema_text = f"EMA20: {safe_format(ema_fast)}, EMA50: {safe_format(ema_slow)}"
-    atr_str = safe_format(atr) if atr is not None else ""
-    volume_str = safe_format(volume, ":.0f") if volume is not None else ""
+    atr_str = safe_format(atr) if atr else ""
+    volume_str = safe_format(volume, ":.0f") if volume else ""
     trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
     news_text = news_sentiment.get(asset_name, "Новостной фон не оценён.")
     
@@ -564,7 +582,8 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
     if not levels:
         return
     try:
-        print(f"🔍 Проверка уровней для {asset_name} {interval} {signal_type}: {levels}")
+        # Лог с форматированием
+        print(f"🔍 Проверка уровней для {asset_name} {interval} {signal_type}: {format_levels_for_log(levels)}")
         price = get_current_price(ASSETS[asset_name]["symbol"])
         if price is None:
             print(f"❌ Не удалось получить цену для {asset_name}")
@@ -1182,7 +1201,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 print(f"❌ Критическая ошибка при обработке {name} {tf}: {e}")
                 import traceback
                 traceback.print_exc()
-                # Продолжаем со следующим активом/таймфреймом
 
 # === Планировщик ===
 async def start_scheduler(app):
