@@ -991,8 +991,8 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${safe_format(lv['sl'])} (ATR×{SL_MULT})\n"
                 msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
-                msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
-                msg += f"📊 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}\n"
+                msg += f"📊 ATR: ${safe_format(lv['atr'])}\n"
+                msg += f"📊 EMA20: ${safe_format(cur_fast)}, EMA50: ${safe_format(cur_slow)}\n"
                 msg += f"🔹 Действие: {ema_signal}"
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
@@ -1016,8 +1016,8 @@ async def send_current_signals(context):
                 msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                 msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}\n"
-                msg += f"🔹 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}"
+                msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}\n"
+                msg += f"🔹 EMA20: ${safe_format(cur_fast)}, EMA50: ${safe_format(cur_slow)}"
                 atr_val = None
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1041,8 +1041,8 @@ async def send_current_signals(context):
                 msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
                 msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
                 msg += f"🎯 TP3: ${safe_format(lv['tp3'])} (ATR×{TP3_MULT})\n"
-                msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
-                msg += f"📊 EMA3: {safe_format(cur_fast3)}, EMA10: {safe_format(cur_slow10)}"
+                msg += f"📊 ATR: ${safe_format(lv['atr'])}\n"
+                msg += f"📊 EMA3: ${safe_format(cur_fast3)}, EMA10: ${safe_format(cur_slow10)}"
                 atr_val = lv.get('atr')
                 df = get_klines(symbol, interval=tf, limit=10)
                 volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1081,7 +1081,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                     msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                     msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                    msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}"
+                    msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}"
                     atr_val = get_atr_value(ASSETS[name]["symbol"], tf)
                     df = get_klines(ASSETS[name]["symbol"], interval=tf, limit=10)
                     volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1103,8 +1103,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     msg += f"🛑 SL: ${safe_format(lv['sl'])} (ATR×{SL_MULT})\n"
                     msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
                     msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
-                    msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
-                    msg += f"📊 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}\n"
+                    msg += f"📊 ATR: ${safe_format(lv['atr'])}\n"
+                    msg += f"📊 EMA20: ${safe_format(cur_fast)}, EMA50: ${safe_format(cur_slow)}\n"
                     msg += f"🔹 Действие: {ema_signal}"
                     atr_val = lv.get('atr')
                     df = get_klines(ASSETS[name]["symbol"], interval=tf, limit=10)
@@ -1128,8 +1128,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     msg += f"🛑 SL: ${safe_format(lv['sl'])}\n"
                     msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (1:1)\n"
                     msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (1:2)\n"
-                    msg += f"📊 RSI: {safe_format(lv['rsi'], ':.1f')}\n"
-                    msg += f"🔹 EMA20: {safe_format(cur_fast)}, EMA50: {safe_format(cur_slow)}"
+                    msg += f"📊 RSI: ${safe_format(lv['rsi'], ':.1f')}\n"
+                    msg += f"🔹 EMA20: ${safe_format(cur_fast)}, EMA50: ${safe_format(cur_slow)}"
                     atr_val = None
                     df = get_klines(ASSETS[name]["symbol"], interval=tf, limit=10)
                     volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
@@ -1153,8 +1153,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     msg += f"🎯 TP1: ${safe_format(lv['tp1'])} (ATR×{TP1_MULT})\n"
                     msg += f"🎯 TP2: ${safe_format(lv['tp2'])} (ATR×{TP2_MULT})\n"
                     msg += f"🎯 TP3: ${safe_format(lv['tp3'])} (ATR×{TP3_MULT})\n"
-                    msg += f"📊 ATR: {safe_format(lv['atr'])}\n"
-                    msg += f"📊 EMA3: {safe_format(cur_fast3)}, EMA10: {safe_format(cur_slow10)}"
+                    msg += f"📊 ATR: ${safe_format(lv['atr'])}\n"
+                    msg += f"📊 EMA3: ${safe_format(cur_fast3)}, EMA10: ${safe_format(cur_slow10)}"
                     atr_val = lv.get('atr')
                     df = get_klines(ASSETS[name]["symbol"], interval=tf, limit=10)
                     volume = df['Volume'].iloc[-1] if df is not None and not df.empty else None
