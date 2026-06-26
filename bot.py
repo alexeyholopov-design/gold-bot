@@ -173,7 +173,6 @@ async def ask_gigachat(prompt):
                 print(f"❌ Неожиданный ответ GigaChat: {data}")
                 return None
         elif response.status_code == 401:
-            # Токен истёк, обновляем и пробуем ещё раз
             print("⚠️ Токен GigaChat истёк, обновляем...")
             new_token = await get_gigachat_token(force=True)
             if new_token:
@@ -618,10 +617,8 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
             print(f"❌ Не удалось получить цену для {asset_name}")
             return
 
-        # Определяем направление: BUY, если TP1 > цена входа, иначе SELL
         is_buy = levels.get('tp1') is not None and levels['price'] < levels['tp1']
 
-        # Проверка SL (если не закрыт по TP)
         if not levels.get('tp1_hit', False) and not levels.get('tp2_hit', False) and not levels.get('tp3_hit', False):
             if not levels.get('sl_hit', False):
                 sl_hit = False
@@ -637,9 +634,7 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
                     print(f"✅ Отправлено уведомление о SL для {asset_name} {interval}")
                     return
 
-        # Проверка TP (если SL не сработал)
         if not levels.get('sl_hit', False):
-            # TP1
             if levels.get('tp1') is not None and not levels.get('tp1_hit', False):
                 tp1_hit = False
                 if is_buy and price >= levels['tp1']:
@@ -653,7 +648,6 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о TP1 для {asset_name} {interval}")
 
-            # TP2
             if levels.get('tp2') is not None and not levels.get('tp2_hit', False):
                 tp2_hit = False
                 if is_buy and price >= levels['tp2']:
@@ -667,7 +661,6 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о TP2 для {asset_name} {interval}")
 
-            # TP3
             if levels.get('tp3') is not None and not levels.get('tp3_hit', False):
                 tp3_hit = False
                 if is_buy and price >= levels['tp3']:
@@ -1260,12 +1253,13 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 import traceback
                 traceback.print_exc()
 
-# === Планировщик ===
-async def start_scheduler(app):
+# === Планировщик (настраивается синхронно) ===
+def setup_scheduler(app):
     job_queue = app.job_queue
     if job_queue is None:
         print("⚠️ JobQueue не доступен. Установите apscheduler.")
         return
+    # Очистка старых задач
     for job in job_queue.jobs():
         job.schedule_removal()
     job_queue.run_repeating(check_and_send_signal, interval=60, first=10)
@@ -1274,9 +1268,6 @@ async def start_scheduler(app):
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=NEWS_UPDATE_INTERVAL, first=30)
     print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 21:00, по воскресеньям в 18:00, утренний обзор в 10:00)")
-
-async def post_init(app):
-    await start_scheduler(app)
 
 # ================================================================
 # ЗАПУСК
@@ -1291,7 +1282,7 @@ def run_bot():
 
     print("🔄 Создаю Application...")
     try:
-        app = Application.builder().token(TOKEN).post_init(post_init).build()
+        app = Application.builder().token(TOKEN).build()
         print("✅ Application создан успешно.")
     except Exception as e:
         print(f"❌ Ошибка при создании Application: {e}")
@@ -1310,6 +1301,9 @@ def run_bot():
     app.add_handler(CommandHandler("today", today_report))
     app.add_handler(CommandHandler("ai", ai_command))
     print("✅ Обработчики добавлены.")
+
+    # Настройка планировщика (синхронно)
+    setup_scheduler(app)
 
     print("🧪 Тестируем подключение к BingX...")
     for name in ASSETS:
