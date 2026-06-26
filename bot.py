@@ -13,6 +13,8 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time, datetime, timedelta, timezone
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 TOKEN = os.environ.get('TOKEN')
 if not TOKEN:
@@ -151,7 +153,7 @@ async def ask_gigachat(prompt):
             "model": "GigaChat",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 200,
+            "max_tokens": 500,  # увеличил до 500
             "stream": False
         }
         response = requests.post(url, headers=headers, json=payload, verify=False, timeout=15)
@@ -258,8 +260,7 @@ RSI (14): {rsi_str}
 """
     try:
         analysis = await ask_gigachat(prompt)
-        if analysis and len(analysis) > 350:
-            analysis = analysis[:350] + "..."
+        # Убираем обрезку – теперь ответ полный
         return analysis
     except Exception as e:
         print(f"❌ Ошибка AI: {e}")
@@ -556,13 +557,16 @@ def check_signal(asset_name, interval):
 async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels, sent_flag):
     if not levels:
         return
+    print(f"🔍 Проверка уровней для {asset_name} {interval} {signal_type}: {levels}")
     price = get_current_price(ASSETS[asset_name]["symbol"])
     if price is None:
+        print(f"❌ Не удалось получить цену для {asset_name}")
         return
     if levels.get('tp1') is not None:
         is_buy = levels['price'] < levels['tp1']
     else:
         is_buy = levels['price'] > levels['sl']
+    # Проверяем SL
     if not levels.get('tp1_hit', False) and not levels.get('tp2_hit', False) and not levels.get('tp3_hit', False):
         if not levels.get('sl_hit', False):
             if is_buy and price <= levels['sl']:
@@ -570,7 +574,9 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
                 update_signal_event(asset_name, interval, signal_type, "sl", price)
                 msg = f"❌ Стоп-лосс сработал по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nSL: ${safe_format(levels['sl'])}"
                 await send_to_chat(FakeContext(bot), msg)
+                print(f"✅ Отправлено уведомление о SL для {asset_name} {interval}")
                 return
+    # Проверяем TP, только если SL не сработал
     if not levels.get('sl_hit', False):
         if levels.get('tp1') is not None and not levels.get('tp1_hit', False):
             if is_buy and price >= levels['tp1']:
@@ -578,18 +584,21 @@ async def check_and_notify_levels(bot, asset_name, interval, signal_type, levels
                 update_signal_event(asset_name, interval, signal_type, "tp1", price)
                 msg = f"✅ TP1 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP1: ${safe_format(levels['tp1'])}"
                 await send_to_chat(FakeContext(bot), msg)
+                print(f"✅ Отправлено уведомление о TP1 для {asset_name} {interval}")
         if levels.get('tp2') is not None and not levels.get('tp2_hit', False):
             if is_buy and price >= levels['tp2']:
                 levels['tp2_hit'] = True
                 update_signal_event(asset_name, interval, signal_type, "tp2", price)
                 msg = f"✅ TP2 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP2: ${safe_format(levels['tp2'])}"
                 await send_to_chat(FakeContext(bot), msg)
+                print(f"✅ Отправлено уведомление о TP2 для {asset_name} {interval}")
         if levels.get('tp3') is not None and not levels.get('tp3_hit', False):
             if is_buy and price >= levels['tp3']:
                 levels['tp3_hit'] = True
                 update_signal_event(asset_name, interval, signal_type, "tp3", price)
                 msg = f"✅ TP3 достигнут по {asset_name} [{interval}] ({signal_type})\nВход: ${safe_format(levels['price'])}\nTP3: ${safe_format(levels['tp3'])}"
                 await send_to_chat(FakeContext(bot), msg)
+                print(f"✅ Отправлено уведомление о TP3 для {asset_name} {interval}")
 
 class FakeContext:
     def __init__(self, bot):
@@ -941,6 +950,7 @@ async def send_current_signals(context):
              combined_signal, combined_levels,
              fast_signal, fast_levels, cur_fast3, cur_slow10, _) = check_signal(name, tf)
             tf_data = asset["data"][tf]
+            # RSI
             if rsi_signal and rsi_levels and rsi_signal != tf_data.get("rsi_sent"):
                 lv = rsi_levels
                 stars = get_signal_stars("rsi")
@@ -962,6 +972,7 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["rsi_sent"] = rsi_signal
                 record_signal_event(name, tf, "rsi", rsi_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
+            # EMA
             if ema_signal and ema_levels and ema_signal != tf_data.get("ema_sent"):
                 lv = ema_levels
                 stars = get_signal_stars("ema")
@@ -986,6 +997,7 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["ema_sent"] = ema_signal
                 record_signal_event(name, tf, "ema", ema_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
+            # Combined
             if combined_signal and combined_levels and combined_signal != tf_data.get("combined_sent"):
                 lv = combined_levels
                 stars = get_signal_stars("combined")
@@ -1009,6 +1021,7 @@ async def send_current_signals(context):
                 await send_to_chat(context, msg)
                 tf_data["combined_sent"] = combined_signal
                 record_signal_event(name, tf, "combined", combined_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], ai_analysis=ai_text)
+            # FAST
             if fast_signal and fast_levels and fast_signal != tf_data.get("fast_ema_sent"):
                 lv = fast_levels
                 stars = get_signal_stars("fast_ema")
@@ -1146,7 +1159,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 tf_data["fast_ema_sent"] = fast_signal
                 record_signal_event(name, tf, "fast_ema", fast_signal, lv['price'], lv['sl'], lv['tp1'], lv['tp2'], lv['tp3'], ai_analysis=ai_text)
 
-            # Проверка уровней
+            # Проверка уровней для всех типов
             if tf_data.get("rsi_levels"):
                 await check_and_notify_levels(context.bot, name, tf, "rsi", tf_data["rsi_levels"], tf_data.get("rsi_sent"))
             if tf_data.get("ema_levels"):
@@ -1173,7 +1186,7 @@ async def start_scheduler(app):
     job_queue.run_daily(weekly_report_task, time=dt_time(hour=18, minute=0), days=(6,))
     # Утренний обзор в 10:00 МСК
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0), days=tuple(range(7)))
-    # Обновление новостей каждые 3600 секунд (с передачей context)
+    # Обновление новостей каждые 3600 секунд
     job_queue.run_repeating(update_news_sentiment, interval=NEWS_UPDATE_INTERVAL, first=30)
     print("📅 Планировщик запущен (проверка каждую минуту, отчёты: ежедневно в 21:00, по воскресеньям в 18:00, утренний обзор в 10:00)")
 
