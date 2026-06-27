@@ -77,6 +77,13 @@ ATR_MULTIPLIERS = {
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
 }
 
+MIN_ATR = {
+    "GOLD": {"5m": 2.5, "15m": 3.0},
+    "BTC":  {"15m": 90, "1h": 200},
+    "ETH":  {"15m": 4.5, "1h": 10},
+    "SOL":  {"15m": 0.5, "1h": 1.3},
+}
+
 def safe_format(value, format_spec=":.2f"):
     try:
         if value is None:
@@ -111,7 +118,6 @@ def bybit_sign_request(params):
 
 def check_bybit_tradfi():
     global GOLD_SYMBOL
-    print("🔑 [DEBUG] check_bybit_tradfi вызвана")
     if not BYBIT_API_KEY or not BYBIT_API_SECRET:
         print("⚠️ Ключи Bybit не заданы, GOLD будет работать через BingX")
         return False
@@ -120,7 +126,6 @@ def check_bybit_tradfi():
         headers = bybit_sign_request(params)
         url = "https://api.bybit.com/v5/market/tickers"
         resp = requests.get(url, params=params, headers=headers, timeout=10)
-        print(f"🔑 [DEBUG] HTTP статус: {resp.status_code}")
         if resp.status_code == 403:
             print("❌ Bybit заблокировал запрос (403). TradFi недоступен.")
             return False
@@ -151,6 +156,36 @@ def get_bybit_price(symbol):
     except:
         pass
     return None
+
+def get_bybit_klines(symbol, interval, limit=100):
+    interval_map = {"5m": "5", "15m": "15", "1h": "60"}
+    bybit_interval = interval_map.get(interval, "15")
+    try:
+        params = {
+            "category": "tradfi",
+            "symbol": symbol,
+            "interval": bybit_interval,
+            "limit": limit
+        }
+        headers = bybit_sign_request(params)
+        url = "https://api.bybit.com/v5/market/kline"
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("retCode") != 0:
+            return None
+        candles = data["result"]["list"]
+        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+        df = df.iloc[::-1]
+        df['Open'] = pd.to_numeric(df['open'])
+        df['High'] = pd.to_numeric(df['high'])
+        df['Low'] = pd.to_numeric(df['low'])
+        df['Close'] = pd.to_numeric(df['close'])
+        df['Volume'] = pd.to_numeric(df['volume'])
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    except:
+        return None
 
 # ---------- GigaChat ----------
 async def get_gigachat_token(force=False):
@@ -545,7 +580,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
         symbol = asset['symbol']
         for tf in ASSET_TIMEFRAMES[name]:
             price = get_current_price(symbol)
-            print(f"🔎 {name} {tf} | цена: {price}")
             if price is None:
                 continue
             try:
@@ -557,7 +591,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 if df_vol is not None and len(df_vol) >= 2:
                     volume_now = df_vol['Volume'].iloc[-1]
                     avg_volume = df_vol['Volume'].mean()
-                    # VWAP за последние 50 свечей
                     typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
                     vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum() if df_vol['Volume'].sum() > 0 else price
                 else:
@@ -565,22 +598,14 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     avg_volume = None
                     vwap = None
 
-                # Фильтр объёма (если данные есть)
+                # Фильтр объёма
                 if volume_now is not None and avg_volume is not None:
                     if volume_now < avg_volume * 0.8:
-                        print(f"ℹ️ Сигнал пропущен для {name} {tf}: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                         continue
 
                 # Фильтр VWAP (только для ТФ ≥ 15m)
                 if tf != "5m" and vwap is not None:
-                    # Определим направление по VWAP
                     vwap_trend = 'UP' if price > vwap else 'DOWN' if price < vwap else None
-                    # Пока только информационно, фильтр не принудительный
-                    # Можно раскомментировать для жёсткого фильтра:
-                    # if signal_direction == 'BUY' and vwap_trend != 'UP':
-                    #     continue
-                    # if signal_direction == 'SELL' and vwap_trend != 'DOWN':
-                    #     continue
                 else:
                     vwap_trend = None
 
