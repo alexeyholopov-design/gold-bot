@@ -292,7 +292,7 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"❌ Ошибка в update_news_sentiment: {e}")
 
-# ---------- AI анализ (усилен объёмом и VWAP) ----------
+# ---------- AI анализ ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
                           atr=None, volume=None, avg_volume=None, vwap=None, higher_trend=None):
     if not GIGACHAT_AUTH_KEY:
@@ -370,7 +370,7 @@ def get_klines(symbol, interval, limit=100):
         df = pd.DataFrame(candles)
         df.rename(columns={'open': 'Open', 'close': 'Close', 'high': 'High', 'low': 'Low',
                            'volume': 'Volume', 'time': 'Timestamp'}, inplace=True)
-        for col in ["Open", "High", "Low", "Close"]:
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         return df.dropna(subset=["Open", "High", "Low", "Close"])
     except:
@@ -590,24 +590,22 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 volume_now = None
                 if df_vol is not None and len(df_vol) >= 2:
                     volume_now = df_vol['Volume'].iloc[-1]
-                    avg_volume = df_vol['Volume'].mean()
-                    typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
-                    vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum() if df_vol['Volume'].sum() > 0 else price
-                else:
-                    volume_now = None
-                    avg_volume = None
-                    vwap = None
+                    if pd.notna(volume_now):
+                        avg_volume = df_vol['Volume'].mean()
+                        typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
+                        vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum() if df_vol['Volume'].sum() > 0 else price
 
                 # Фильтр объёма
                 if volume_now is not None and avg_volume is not None:
                     if volume_now < avg_volume * 0.8:
+                        print(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                         continue
 
                 # Фильтр VWAP (только для ТФ ≥ 15m)
-                if tf != "5m" and vwap is not None:
-                    vwap_trend = 'UP' if price > vwap else 'DOWN' if price < vwap else None
-                else:
-                    vwap_trend = None
+                if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                    # VWAP фильтр: BUY только выше VWAP, SELL только ниже
+                    # Этот фильтр будет применён после определения направления сигнала
+                    pass  # фильтр будет внутри обработки сигналов
 
                 current_rsi, prev_rsi, _, _ = get_rsi_and_bars(symbol, tf)
                 atr = get_atr_value(symbol, tf)
@@ -619,11 +617,20 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                         rsi_signal = "SELL"
                     if rsi_signal:
+                        # Проверка VWAP для сигнала
+                        if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                            if (rsi_signal == "BUY" and price <= vwap) or (rsi_signal == "SELL" and price >= vwap):
+                                print(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                continue
                         await handle_new_signal(name, tf, "rsi", rsi_signal, price, rsi=current_rsi, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
                 ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf, EMA_FAST, EMA_SLOW)
                 if ema_signal and atr is not None:
+                    if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                        if (ema_signal == "BUY" and price <= vwap) or (ema_signal == "SELL" and price >= vwap):
+                            print(f"ℹ️ Сигнал {ema_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                            continue
                     await handle_new_signal(name, tf, "ema", ema_signal, price,
                                             ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                             volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
@@ -635,6 +642,10 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     elif rsi_signal == "SELL" and cur_fast < cur_slow:
                         combined_signal = "SELL"
                     if combined_signal:
+                        if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                            if (combined_signal == "BUY" and price <= vwap) or (combined_signal == "SELL" and price >= vwap):
+                                print(f"ℹ️ Сигнал {combined_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                continue
                         await handle_new_signal(name, tf, "combined", combined_signal, price,
                                                 rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
@@ -648,6 +659,10 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                         if (fast_cross == "BUY" and trend != "UP") or (fast_cross == "SELL" and trend != "DOWN"):
                             trend_ok = False
                     if trend_ok:
+                        if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                            if (fast_cross == "BUY" and price <= vwap) or (fast_cross == "SELL" and price >= vwap):
+                                print(f"ℹ️ Сигнал {fast_cross} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                continue
                         await handle_new_signal(name, tf, "fast_ema", fast_cross, price,
                                                 cur_fast3=cur_fast3, cur_slow10=cur_slow10, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap,
