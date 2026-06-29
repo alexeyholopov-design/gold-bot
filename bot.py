@@ -255,7 +255,7 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"❌ Ошибка в update_news_sentiment: {e}")
 
-# ---------- AI анализ (усилен объёмом и VWAP) ----------
+# ---------- AI анализ ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
                           atr=None, volume=None, avg_volume=None, vwap=None, higher_trend=None):
     if not GIGACHAT_AUTH_KEY:
@@ -269,9 +269,9 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
     atr_str = safe_format(atr) if atr else ""
     vol_str = ""
     if volume is not None and avg_volume is not None and vwap is not None:
-        vol_str = (f"Объём свечи: {safe_format(volume, ':.0f')} | "
-                   f"Средний объём (50): {safe_format(avg_volume, ':.0f')} | "
-                   f"VWAP (50): ${safe_format(vwap)}\n")
+        vol_str = (f"Объём свечи: {float(volume):.0f} | "
+                   f"Средний объём (50): {float(avg_volume):.0f} | "
+                   f"VWAP (50): ${float(vwap):.2f}\n")
     trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
     news_text = news_sentiment.get(asset_name, "Новостной фон не оценён.")
 
@@ -331,7 +331,6 @@ def get_klines(symbol, interval, limit=100):
         df = pd.DataFrame(candles)
         df.rename(columns={'open': 'Open', 'close': 'Close', 'high': 'High', 'low': 'Low',
                            'volume': 'Volume', 'time': 'Timestamp'}, inplace=True)
-        # Преобразуем ВСЕ нужные колонки в числа
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         return df.dropna(subset=["Open", "High", "Low", "Close"])
@@ -449,7 +448,6 @@ async def check_signal_levels(bot, signal_dict):
 
     is_buy = signal_dict['signal'] == 'BUY'
 
-    # Проверка SL (единственное, что закрывает сигнал полностью)
     if not signal_dict['sl_hit']:
         sl_hit = (is_buy and price <= levels['sl']) or (not is_buy and price >= levels['sl'])
         if sl_hit:
@@ -461,24 +459,20 @@ async def check_signal_levels(bot, signal_dict):
             print(f"✅ Отправлено уведомление о SL для {asset_name} {signal_dict['tf']}")
             return
 
-    # Если SL не сработал, проверяем TP
     if not signal_dict['sl_hit']:
         # TP1
         if not signal_dict['tp1_hit']:
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
                 signal_dict['tp1_hit'] = True
-                # Перенос стопа в безубыток
                 signal_dict['levels']['sl'] = levels['price']
                 msg = (f"✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}\n"
                        f"🔒 Стоп перенесён в безубыток")
                 await send_to_chat(FakeContext(bot), msg)
                 print(f"✅ Отправлено уведомление о TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
-                # Не закрываем сигнал, продолжаем проверять TP2/TP3
         else:
-            # После TP1 проверяем TP2 и TP3 с новым стопом (безубыток)
-            # TP2
+            # После TP1 проверяем TP2 и TP3
             if not signal_dict['tp2_hit']:
                 tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
                 if tp2_hit:
@@ -487,7 +481,6 @@ async def check_signal_levels(bot, signal_dict):
                            f"Вход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}")
                     await send_to_chat(FakeContext(bot), msg)
                     print(f"✅ Отправлено уведомление о TP2 для {asset_name} {signal_dict['tf']}")
-            # TP3
             if not signal_dict['tp3_hit']:
                 tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
                 if tp3_hit:
@@ -513,6 +506,7 @@ def has_open_signal(asset_name, tf, signal_type, direction):
             return True
     return False
 
+# ---------- ИСПРАВЛЕННЫЙ ВЫВОД ОБЪЁМА И VWAP (короткие числа) ----------
 async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None, ema_fast=None, ema_slow=None,
                             cur_fast3=None, cur_slow10=None, atr=None, volume=None, avg_volume=None, vwap=None,
                             higher_trend=None, context=None):
@@ -542,7 +536,7 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     if cur_fast3 is not None:
         msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
     if volume is not None:
-        msg += f"📊 Объём: {safe_format(volume, ':.0f')} | Средний: {safe_format(avg_volume, ':.0f')} | VWAP: ${safe_format(vwap)}\n"
+        msg += f"📊 Объём: {float(volume):.0f} | Средний: {float(avg_volume):.0f} | VWAP: ${float(vwap):.2f}\n"
     if ai_analysis:
         msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
@@ -559,7 +553,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
             if price is None:
                 continue
             try:
-                # Получаем свечи для объёмов и VWAP (50 свечей)
                 df_vol = get_klines(symbol, tf, limit=50)
                 avg_volume = None
                 vwap = None
@@ -568,22 +561,18 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     volume_now = df_vol['Volume'].iloc[-1]
                     if pd.notna(volume_now):
                         avg_volume = df_vol['Volume'].mean()
-                        # VWAP: (High+Low+Close)/3 * Volume / sum(Volume)
                         typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
                         if df_vol['Volume'].sum() > 0:
                             vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
                         else:
                             vwap = price
 
-                # Фильтр объёма
                 if volume_now is not None and avg_volume is not None and avg_volume > 0:
                     if volume_now < avg_volume * 0.8:
                         print(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                         continue
 
-                # Фильтр VWAP (только для ТФ ≥ 15m)
                 if tf != "5m" and vwap is not None and not np.isnan(vwap):
-                    # VWAP фильтр будет применён после определения направления сигнала
                     pass
 
                 current_rsi, prev_rsi, _, _ = get_rsi_and_bars(symbol, tf)
@@ -596,7 +585,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                         rsi_signal = "SELL"
                     if rsi_signal:
-                        # Проверка VWAP для сигнала
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (rsi_signal == "BUY" and price <= vwap) or (rsi_signal == "SELL" and price >= vwap):
                                 print(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
