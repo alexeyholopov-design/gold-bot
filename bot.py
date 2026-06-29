@@ -77,6 +77,10 @@ ATR_MULTIPLIERS = {
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
 }
 
+# Параметры для расчёта потенциального заработка
+MARGIN = {"crypto": 10.0, "gold": 10.0}
+LEVERAGE = {"crypto": 20, "gold": 500}
+
 def safe_format(value, format_spec=":.2f"):
     try:
         if value is None:
@@ -435,7 +439,7 @@ def add_active_signal(asset_name, tf, signal_dict):
         active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- ИСПРАВЛЕННАЯ ПРОВЕРКА УРОВНЕЙ (TP1/TP2/TP3 не закрывают сделку) ----------
+# ---------- Проверка уровней (TP1/TP2/TP3 не закрывают сделку) ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']:
@@ -506,7 +510,7 @@ def has_open_signal(asset_name, tf, signal_type, direction):
             return True
     return False
 
-# ---------- ИСПРАВЛЕННЫЙ ВЫВОД ОБЪЁМА И VWAP (короткие числа) ----------
+# ---------- Отправка нового сигнала ----------
 async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None, ema_fast=None, ema_slow=None,
                             cur_fast3=None, cur_slow10=None, atr=None, volume=None, avg_volume=None, vwap=None,
                             higher_trend=None, context=None):
@@ -638,7 +642,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 print(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
     await check_all_active_signals(context.bot)
 
-# ---------- Отчёты ----------
+# ---------- Отчёты (исправленные, с потенциальным заработком) ----------
 def get_moscow_time():
     return datetime.now(timezone.utc) + timedelta(hours=3)
 
@@ -650,15 +654,65 @@ def calculate_stats(signals):
     tp2_count = sum(1 for s in signals if s['tp2_hit'])
     tp3_count = sum(1 for s in signals if s['tp3_hit'])
     sl_count = sum(1 for s in signals if s['sl_hit'])
-    closed = tp1_count + tp2_count + tp3_count + sl_count
+    # Закрытыми считаем те, где был TP1 или SL (независимо от флага closed)
+    closed = tp1_count + sl_count
     success_rate = (tp1_count / closed * 100) if closed > 0 else 0
     return {
-        'total': total, 'tp1': tp1_count, 'tp2': tp2_count,
-        'tp3': tp3_count, 'sl': sl_count, 'closed': closed,
+        'total': total,
+        'tp1': tp1_count,
+        'tp2': tp2_count,
+        'tp3': tp3_count,
+        'sl': sl_count,
+        'closed': closed,
         'success_rate': success_rate
     }
 
-def generate_insights(stats_by_asset, stats_by_type):
+def calculate_potential_profit(signals):
+    """
+    Считает потенциальную прибыль в USDT по сигналам, у которых был TP1 или SL.
+    Для крипты: маржа $10, плечо 20.
+    Для золота: маржа $10, плечо 500.
+    Если был TP1 (и не было SL), прибыль = abs(tp1 - entry) * margin * leverage / entry.
+    Если был SL (без TP1), убыток = -abs(entry - sl) * margin * leverage / entry.
+    Если был TP1, а затем SL (безубыток), считаем нуль.
+    Если TP2/TP3, прибыль по наивысшему достигнутому TP.
+    """
+    total_profit = 0.0
+    for s in signals:
+        if not (s.get('tp1_hit') or s.get('sl_hit')):
+            continue
+        asset = s['asset']
+        levels = s['levels']
+        entry = levels['price']
+        is_gold = (asset == "GOLD")
+        margin = MARGIN["gold"] if is_gold else MARGIN["crypto"]
+        leverage = LEVERAGE["gold"] if is_gold else LEVERAGE["crypto"]
+
+        if s.get('tp3_hit'):
+            tp = levels['tp3']
+            diff = abs(tp - entry)
+            profit = diff * (margin * leverage) / entry
+        elif s.get('tp2_hit'):
+            tp = levels['tp2']
+            diff = abs(tp - entry)
+            profit = diff * (margin * leverage) / entry
+        elif s.get('tp1_hit') and not s.get('sl_hit'):
+            tp = levels['tp1']
+            diff = abs(tp - entry)
+            profit = diff * (margin * leverage) / entry
+        elif s.get('sl_hit') and not s.get('tp1_hit'):
+            sl = levels['sl']
+            diff = abs(entry - sl)
+            profit = -diff * (margin * leverage) / entry
+        elif s.get('sl_hit') and s.get('tp1_hit'):
+            # Безубыток
+            profit = 0.0
+        else:
+            continue
+        total_profit += profit
+    return total_profit
+
+def generate_insights(stats_by_asset, stats_by_type, signals):
     insights = []
     best, worst = [], []
     for asset, st in stats_by_asset.items():
@@ -683,38 +737,42 @@ def generate_insights(stats_by_asset, stats_by_type):
                 insights.append(f"💡 {typ.upper()} показал 100% попаданий ({st['tp1']} из {st['closed']}), но выборка мала.")
             elif st['success_rate'] == 0:
                 insights.append(f"💡 {typ.upper()} показал 0% успеха – стоит пересмотреть логику.")
+    # Потенциальный заработок
+    profit = calculate_potential_profit(signals)
+    profit_str = f"{profit:+.2f}"
+    insights.append(f"💵 Потенциальный заработок (маржа ${MARGIN['crypto']}/{MARGIN['gold']}, плечо {LEVERAGE['crypto']}x/{LEVERAGE['gold']}x): {profit_str} USDT")
     return insights
 
 async def generate_daily_report():
     now = get_moscow_time()
     yesterday = now - timedelta(days=1)
-    signals = [s for s in signal_history if s['timestamp'].replace(tzinfo=timezone.utc) + timedelta(hours=3) >= yesterday]
+    signals = [s for s in signal_history if (s['tp1_hit'] or s['sl_hit']) and s['timestamp'].replace(tzinfo=timezone.utc) + timedelta(hours=3) >= yesterday]
     return format_report(signals, f"📊 Ежедневный отчёт за {now.strftime('%d.%m.%Y')}")
 
 async def generate_weekly_report():
     now = get_moscow_time()
     week_ago = now - timedelta(days=7)
-    signals = [s for s in signal_history if s['timestamp'].replace(tzinfo=timezone.utc) + timedelta(hours=3) >= week_ago]
+    signals = [s for s in signal_history if (s['tp1_hit'] or s['sl_hit']) and s['timestamp'].replace(tzinfo=timezone.utc) + timedelta(hours=3) >= week_ago]
     return format_report(signals, f"📊 Воскресный отчёт за неделю ({ (now-timedelta(days=7)).strftime('%d.%m')} - {now.strftime('%d.%m.%Y')})")
 
 async def generate_today_report():
     now = get_moscow_time()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    signals = [s for s in signal_history if s['timestamp'].replace(tzinfo=timezone.utc) + timedelta(hours=3) >= today_start]
+    signals = [s for s in signal_history if (s['tp1_hit'] or s['sl_hit']) and s['timestamp'].replace(tzinfo=timezone.utc) + timedelta(hours=3) >= today_start]
     return format_report(signals, f"📊 Отчёт за сегодня ({now.strftime('%d.%m.%Y')})")
 
 def format_report(signals, title):
     if not signals:
         return f"{title}\n\nСигналов не было."
-    total = len(signals)
+
+    # Собираем статистику
     stats_by_asset = defaultdict(list)
     stats_by_type = defaultdict(list)
     for s in signals:
-        if not s['closed']:
-            continue
         stats_by_asset[s['asset']].append(s)
         stats_by_type[s['type']].append(s)
-    all_stats = calculate_stats([s for s in signals if s['closed']])
+
+    all_stats = calculate_stats(signals)
     lines = [title, ""]
     if all_stats:
         lines.append(f"Всего сигналов: {all_stats['total']}")
@@ -723,6 +781,8 @@ def format_report(signals, title):
         if all_stats['tp2'] == 0 and all_stats['tp3'] == 0:
             lines.append("TP2 и TP3 не достигнуты ни разу.")
         lines.append("")
+
+    # По инструментам
     asset_stats = {}
     for asset, lst in stats_by_asset.items():
         st = calculate_stats(lst)
@@ -732,6 +792,8 @@ def format_report(signals, title):
     for asset, st in sorted(asset_stats.items()):
         lines.append(f"{asset}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
     lines.append("")
+
+    # По типам сигналов
     type_stats = {}
     for typ, lst in stats_by_type.items():
         st = calculate_stats(lst)
@@ -741,10 +803,13 @@ def format_report(signals, title):
     for typ, st in sorted(type_stats.items()):
         lines.append(f"{typ.upper()}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
     lines.append("")
-    insights = generate_insights(asset_stats, type_stats)
+
+    # Инсайты и потенциальный заработок
+    insights = generate_insights(asset_stats, type_stats, signals)
     if insights:
         lines.append("💡 Заметка:")
         lines.extend(insights)
+
     return "\n".join(lines)
 
 class FakeContext:
