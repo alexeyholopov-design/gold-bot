@@ -436,6 +436,7 @@ def add_active_signal(asset_name, tf, signal_dict):
         active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
+# ---------- ИСПРАВЛЕННАЯ ПРОВЕРКА УРОВНЕЙ (TP1/TP2/TP3 не закрывают сделку) ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']:
@@ -445,7 +446,10 @@ async def check_signal_levels(bot, signal_dict):
     price = get_current_price(symbol)
     if price is None:
         return
+
     is_buy = signal_dict['signal'] == 'BUY'
+
+    # Проверка SL (единственное, что закрывает сигнал полностью)
     if not signal_dict['sl_hit']:
         sl_hit = (is_buy and price <= levels['sl']) or (not is_buy and price >= levels['sl'])
         if sl_hit:
@@ -454,34 +458,44 @@ async def check_signal_levels(bot, signal_dict):
             msg = (f"❌ Стоп-лосс сработал по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                    f"Вход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}")
             await send_to_chat(FakeContext(bot), msg)
+            print(f"✅ Отправлено уведомление о SL для {asset_name} {signal_dict['tf']}")
             return
+
+    # Если SL не сработал, проверяем TP
     if not signal_dict['sl_hit']:
+        # TP1
         if not signal_dict['tp1_hit']:
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
                 signal_dict['tp1_hit'] = True
-                signal_dict['closed'] = True
+                # Перенос стопа в безубыток
+                signal_dict['levels']['sl'] = levels['price']
                 msg = (f"✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
-                       f"Вход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}")
+                       f"Вход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}\n"
+                       f"🔒 Стоп перенесён в безубыток")
                 await send_to_chat(FakeContext(bot), msg)
-                return
-        if not signal_dict['tp2_hit'] and not signal_dict['closed']:
-            tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
-            if tp2_hit:
-                signal_dict['tp2_hit'] = True
-                signal_dict['closed'] = True
-                msg = (f"✅ TP2 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
-                       f"Вход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}")
-                await send_to_chat(FakeContext(bot), msg)
-                return
-        if not signal_dict['tp3_hit'] and not signal_dict['closed']:
-            tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
-            if tp3_hit:
-                signal_dict['tp3_hit'] = True
-                signal_dict['closed'] = True
-                msg = (f"✅ TP3 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
-                       f"Вход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f}")
-                await send_to_chat(FakeContext(bot), msg)
+                print(f"✅ Отправлено уведомление о TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
+                # Не закрываем сигнал, продолжаем проверять TP2/TP3
+        else:
+            # После TP1 проверяем TP2 и TP3 с новым стопом (безубыток)
+            # TP2
+            if not signal_dict['tp2_hit']:
+                tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
+                if tp2_hit:
+                    signal_dict['tp2_hit'] = True
+                    msg = (f"✅ TP2 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                           f"Вход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}")
+                    await send_to_chat(FakeContext(bot), msg)
+                    print(f"✅ Отправлено уведомление о TP2 для {asset_name} {signal_dict['tf']}")
+            # TP3
+            if not signal_dict['tp3_hit']:
+                tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
+                if tp3_hit:
+                    signal_dict['tp3_hit'] = True
+                    msg = (f"✅ TP3 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                           f"Вход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f}")
+                    await send_to_chat(FakeContext(bot), msg)
+                    print(f"✅ Отправлено уведомление о TP3 для {asset_name} {signal_dict['tf']}")
 
 async def check_all_active_signals(bot):
     for asset_name, tf_dict in active_signals.items():
