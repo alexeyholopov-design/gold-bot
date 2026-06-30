@@ -571,6 +571,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 avg_volume = None
                 vwap = None
                 volume_now = None
+                avg_atr = None
                 if df_vol is not None and len(df_vol) >= 2:
                     volume_now = df_vol['Volume'].iloc[-1]
                     if pd.notna(volume_now):
@@ -580,10 +581,17 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                             vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
                         else:
                             vwap = price
+                    # Средний ATR за 50 свечей (для фильтра RSI)
+                    tr = np.maximum(df_vol['High'] - df_vol['Low'],
+                                    np.maximum(abs(df_vol['High'] - df_vol['Close'].shift()),
+                                               abs(df_vol['Low'] - df_vol['Close'].shift())))
+                    avg_atr = tr.mean()
 
+                # Фильтр объёма: порог 60% для 15m/1h, 80% для 5m
+                vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
                 if volume_now is not None and avg_volume is not None and avg_volume > 0:
-                    if volume_now < avg_volume * 0.8:
-                        logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
+                    if volume_now < avg_volume * vol_threshold:
+                        logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f} (порог {vol_threshold*100:.0f}%)")
                         continue
 
                 if tf != "5m" and vwap is not None and not np.isnan(vwap):
@@ -599,6 +607,11 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                         rsi_signal = "SELL"
                     if rsi_signal:
+                        # Фильтр ATR для RSI: только если текущий ATR > среднего ATR
+                        if avg_atr is not None and atr <= avg_atr:
+                            logger.info(f"ℹ️ RSI-сигнал для {name} {tf} пропущен: ATR={atr:.4f} <= средний ATR={avg_atr:.4f}")
+                            continue
+                        # Проверка VWAP
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (rsi_signal == "BUY" and price <= vwap) or (rsi_signal == "SELL" and price >= vwap):
                                 logger.info(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
