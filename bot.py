@@ -63,6 +63,7 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
+# Оставляем XAUT-USDT
 GOLD_SYMBOL = "XAUT-USDT"
 
 ASSETS = {
@@ -106,7 +107,7 @@ def safe_format(value, format_spec=":.2f"):
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
 
-# ---------- Bybit TradFi ----------
+# ---------- Bybit TradFi (неактивно) ----------
 def bybit_sign_request(params):
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
@@ -221,10 +222,10 @@ async def ask_gigachat(prompt):
         logger.error(f"❌ GigaChat error: {e}")
     return None
 
-# ---------- Новости ----------
+# ---------- Новости (Kitco для GOLD, краткий AI) ----------
 def fetch_news(asset):
     rss_urls = {
-        "GOLD": "https://ru.investing.com/rss/news_295.rss",
+        "GOLD": "https://www.kitco.com/rss/",
         "BTC": "https://cointelegraph.com/rss",
         "ETH": "https://cointelegraph.com/rss",
         "SOL": "https://cointelegraph.com/rss",
@@ -234,7 +235,7 @@ def fetch_news(asset):
         return ""
     try:
         feed = feedparser.parse(url)
-        entries = feed.entries[:10]
+        entries = feed.entries[:5]
         titles = [entry.title for entry in entries if hasattr(entry, 'title')]
         return " ".join(titles) if titles else ""
     except:
@@ -244,13 +245,10 @@ async def analyze_news_with_gigachat(asset, news_text):
     if not news_text:
         return "Новостей нет."
     prompt = f"""
-Проанализируй новости по активу {asset} за последние часы. Новости:
+Проанализируй новости по активу {asset}. Новости:
 {news_text}
 
-Дай краткую оценку (1–2 предложения):
-- общее настроение (бычье/медвежье/нейтральное)
-- ключевые события
-- влияние на цену в ближайшие часы
+Дай КРАТКУЮ оценку в 1-2 предложения: общее настроение, ключевое событие, влияние на цену в ближайшие часы.
 """
     return await ask_gigachat(prompt)
 
@@ -270,7 +268,7 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в update_news_sentiment: {e}")
 
-# ---------- AI анализ ----------
+# ---------- AI анализ сигналов ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
                           atr=None, volume=None, avg_volume=None, vwap=None, higher_trend=None):
     if not GIGACHAT_AUTH_KEY:
@@ -581,13 +579,11 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                             vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
                         else:
                             vwap = price
-                    # Средний ATR за 50 свечей (для фильтра RSI)
                     tr = np.maximum(df_vol['High'] - df_vol['Low'],
                                     np.maximum(abs(df_vol['High'] - df_vol['Close'].shift()),
                                                abs(df_vol['Low'] - df_vol['Close'].shift())))
                     avg_atr = tr.mean()
 
-                # Фильтр объёма: порог 60% для 15m/1h, 80% для 5m
                 vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
                 if volume_now is not None and avg_volume is not None and avg_volume > 0:
                     if volume_now < avg_volume * vol_threshold:
@@ -607,11 +603,9 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
                         rsi_signal = "SELL"
                     if rsi_signal:
-                        # Фильтр ATR для RSI: только если текущий ATR > среднего ATR
                         if avg_atr is not None and atr <= avg_atr:
                             logger.info(f"ℹ️ RSI-сигнал для {name} {tf} пропущен: ATR={atr:.4f} <= средний ATR={avg_atr:.4f}")
                             continue
-                        # Проверка VWAP
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (rsi_signal == "BUY" and price <= vwap) or (rsi_signal == "SELL" and price >= vwap):
                                 logger.info(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
