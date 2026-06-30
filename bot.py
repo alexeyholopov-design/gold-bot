@@ -40,6 +40,7 @@ active_signals = {}
 gigachat_token = None
 gigachat_token_expires = 0
 news_sentiment = {}
+telegram_app = None   # будет хранить Application для ручных вызовов
 
 ASSET_TIMEFRAMES = {
     "GOLD": ["5m", "15m"],
@@ -48,7 +49,7 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
-GOLD_SYMBOL = "XAUT-USDT"   # замени на "PAXG-USDT" если хочешь PAXG
+GOLD_SYMBOL = "XAUT-USDT"   # можно заменить на "PAXG-USDT"
 
 ASSETS = {
     "GOLD": {"symbol": GOLD_SYMBOL},
@@ -435,7 +436,7 @@ def add_active_signal(asset_name, tf, signal_dict):
         active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней (исправлено: TP2/TP3 уведомления, SL при БУ не шлём) ----------
+# ---------- Проверка уровней (исправлено) ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']:
@@ -648,7 +649,6 @@ def get_moscow_time():
     return datetime.now(timezone.utc) + timedelta(hours=3)
 
 def calculate_stats(signals):
-    """Возвращает статистику на основе фактов (TP1/2/3 и настоящие SL)"""
     total = len(signals)
     if total == 0:
         return None
@@ -657,7 +657,6 @@ def calculate_stats(signals):
     tp3_count = sum(1 for s in signals if s['tp3_hit'])
     # SL только те, где был sl и не было ни одного TP
     true_sl = sum(1 for s in signals if s['sl_hit'] and not (s['tp1_hit'] or s['tp2_hit'] or s['tp3_hit']))
-    # Всего закрытых событий: TP1 + истинные SL (безубыток не считаем ни успехом ни провалом)
     closed = tp1_count + true_sl
     success_rate = (tp1_count / closed * 100) if closed > 0 else 0
     return {
@@ -788,6 +787,35 @@ async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEND_TO_CHANNEL = False
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
+# ---------- Утренний обзор (ручной и автоматический) ----------
+async def send_morning_report(context=None):
+    print("📊 Формирование утреннего обзора...")
+    if context is None and telegram_app:
+        context = FakeContext(telegram_app.bot)
+    elif context is None:
+        print("❌ Нет контекста для отправки утреннего обзора")
+        return
+    msg = "🌅 **Утренний обзор рынка**\n\n"
+    for name, asset in ASSETS.items():
+        symbol = asset['symbol']
+        price = get_current_price(symbol)
+        rsi, _, _, _ = get_rsi_and_bars(symbol, "15m")
+        if price is not None and rsi is not None:
+            msg += f"**{name}** ({symbol}): ${float(price):.2f}  |  RSI(14): {float(rsi):.1f}\n"
+        else:
+            msg += f"**{name}**: данные недоступны\n"
+    msg += "\n📰 **Новостной фон:**\n"
+    for asset_name in ASSETS:
+        sentiment = news_sentiment.get(asset_name, "Нет данных")
+        msg += f"**{asset_name}**: {sentiment}\n"
+    await send_to_chat(context, msg)
+    print("✅ Утренний обзор отправлен")
+
+async def morning_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Формирую утренний обзор...")
+    await send_morning_report(context)
+
+# ---------- Планировщик ----------
 async def start_scheduler(app):
     job_queue = app.job_queue
     if job_queue is None:
@@ -814,24 +842,7 @@ async def weekly_report_job(context):
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
-async def send_morning_report(context: ContextTypes.DEFAULT_TYPE):
-    print("📊 Формирование утреннего обзора...")
-    msg = "🌅 **Утренний обзор рынка**\n\n"
-    for name, asset in ASSETS.items():
-        symbol = asset['symbol']
-        price = get_current_price(symbol)
-        rsi, _, _, _ = get_rsi_and_bars(symbol, "15m")
-        if price is not None and rsi is not None:
-            msg += f"**{name}** ({symbol}): ${float(price):.2f}  |  RSI(14): {float(rsi):.1f}\n"
-        else:
-            msg += f"**{name}**: данные недоступны\n"
-    msg += "\n📰 **Новостной фон:**\n"
-    for asset_name in ASSETS:
-        sentiment = news_sentiment.get(asset_name, "Нет данных")
-        msg += f"**{asset_name}**: {sentiment}\n"
-    await send_to_chat(context, msg)
-    print("✅ Утренний обзор отправлен")
-
+# ---------- Команды бота (без изменений) ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
@@ -850,6 +861,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status – активные сигналы\n"
         "/today – отчёт за сегодня\n"
         "/ai {актив} – AI-анализ\n"
+        "/morning – утренний обзор\n"
         "/channel_on – включить канал\n"
         "/channel_off – приостановить канал"
     )
@@ -948,10 +960,12 @@ async def ai_command(update, context):
     else:
         await update.message.reply_text("AI-анализ отсутствует.")
 
+# ---------- Запуск ----------
 async def post_init(app):
     await start_scheduler(app)
 
 def run_bot():
+    global telegram_app
     print("🤖 Бот запускается...")
     if GIGACHAT_AUTH_KEY:
         print("🧠 GigaChat AI включён")
@@ -977,8 +991,24 @@ def run_bot():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("today", today_report))
     app.add_handler(CommandHandler("ai", ai_command))
+    app.add_handler(CommandHandler("morning", morning_command))
     app.add_handler(CommandHandler("channel_on", channel_on))
     app.add_handler(CommandHandler("channel_off", channel_off))
+
+    telegram_app = app
+
+    # Отправка утреннего обзора при старте, если ещё не было
+    async def startup_morning():
+        await asyncio.sleep(5)
+        now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
+        if 6 <= now_msk.hour <= 12:
+            try:
+                await send_morning_report(FakeContext(app.bot))
+            except Exception as e:
+                print(f"❌ Ошибка стартового обзора: {e}")
+
+    asyncio.ensure_future(startup_morning())
+
     print("✅ Бот готов")
     app.run_polling(drop_pending_updates=True)
 
