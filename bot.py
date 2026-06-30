@@ -7,11 +7,25 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from datetime import time as dt_time, datetime, timedelta, timezone
 from collections import defaultdict
 import urllib3
+import logging
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ---------- Логирование ----------
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ---------- Конфигурация ----------
 TOKEN = os.environ.get('TOKEN')
 if not TOKEN:
+    logger.error("TOKEN environment variable not set")
     raise ValueError("TOKEN environment variable not set")
 
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
@@ -40,7 +54,7 @@ active_signals = {}
 gigachat_token = None
 gigachat_token_expires = 0
 news_sentiment = {}
-telegram_app = None   # будет хранить Application для ручных вызовов
+telegram_app = None
 
 ASSET_TIMEFRAMES = {
     "GOLD": ["5m", "15m"],
@@ -49,7 +63,7 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
-GOLD_SYMBOL = "XAUT-USDT"   # можно заменить на "PAXG-USDT"
+GOLD_SYMBOL = "XAUT-USDT"
 
 ASSETS = {
     "GOLD": {"symbol": GOLD_SYMBOL},
@@ -92,7 +106,7 @@ def safe_format(value, format_spec=":.2f"):
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
 
-# ---------- Bybit TradFi (неактивно) ----------
+# ---------- Bybit TradFi ----------
 def bybit_sign_request(params):
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
@@ -113,7 +127,7 @@ def bybit_sign_request(params):
 def check_bybit_tradfi():
     global GOLD_SYMBOL
     if not BYBIT_API_KEY or not BYBIT_API_SECRET:
-        print("⚠️ Ключи Bybit не заданы, GOLD будет работать через BingX")
+        logger.warning("⚠️ Ключи Bybit не заданы, GOLD будет работать через BingX")
         return False
     try:
         params = {"category": "tradfi", "symbol": "XAUUSDT+"}
@@ -121,20 +135,20 @@ def check_bybit_tradfi():
         url = "https://api.bybit.com/v5/market/tickers"
         resp = requests.get(url, params=params, headers=headers, timeout=10)
         if resp.status_code == 403:
-            print("❌ Bybit заблокировал запрос (403). TradFi недоступен.")
+            logger.error("❌ Bybit заблокировал запрос (403). TradFi недоступен.")
             return False
         data = resp.json()
         if data.get("retCode") == 0 and data.get("result", {}).get("list"):
             price = float(data["result"]["list"][0]["lastPrice"])
-            print(f"✅ Доступ к Bybit TradFi подтверждён. Цена XAUUSDT+: ${price:.2f}")
+            logger.info(f"✅ Доступ к Bybit TradFi подтверждён. Цена XAUUSDT+: ${price:.2f}")
             GOLD_SYMBOL = "XAUUSDT+"
             ASSETS["GOLD"]["symbol"] = GOLD_SYMBOL
             return True
         else:
-            print(f"❌ Bybit вернул ошибку: {data.get('retMsg', 'Unknown error')}")
+            logger.error(f"❌ Bybit вернул ошибку: {data.get('retMsg', 'Unknown error')}")
             return False
     except Exception as e:
-        print(f"❌ Исключение при проверке Bybit TradFi: {type(e).__name__}: {e}")
+        logger.error(f"❌ Исключение при проверке Bybit TradFi: {type(e).__name__}: {e}")
         return False
 
 def get_bybit_price(symbol):
@@ -174,7 +188,7 @@ async def get_gigachat_token(force=False):
             gigachat_token_expires = expires_at - 60
             return gigachat_token
     except Exception as e:
-        print(f"❌ Ошибка токена GigaChat: {e}")
+        logger.error(f"❌ Ошибка токена GigaChat: {e}")
     return None
 
 async def ask_gigachat(prompt):
@@ -204,7 +218,7 @@ async def ask_gigachat(prompt):
                     if "choices" in data and len(data["choices"]) > 0:
                         return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"❌ GigaChat error: {e}")
+        logger.error(f"❌ GigaChat error: {e}")
     return None
 
 # ---------- Новости ----------
@@ -243,18 +257,18 @@ async def analyze_news_with_gigachat(asset, news_text):
 async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
     global news_sentiment
     try:
-        print("📰 Обновление новостного фона...")
+        logger.info("📰 Обновление новостного фона...")
         for asset in ASSETS:
             news_text = fetch_news(asset)
             if news_text:
                 analysis = await analyze_news_with_gigachat(asset, news_text)
                 news_sentiment[asset] = analysis
-                print(f"📰 {asset}: {analysis[:100]}...")
+                logger.info(f"📰 {asset}: {analysis[:100]}...")
             else:
                 news_sentiment[asset] = "Новостей не найдено."
-        print("✅ Новостной фон обновлён")
+        logger.info("✅ Новостной фон обновлён")
     except Exception as e:
-        print(f"❌ Ошибка в update_news_sentiment: {e}")
+        logger.error(f"❌ Ошибка в update_news_sentiment: {e}")
 
 # ---------- AI анализ ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
@@ -298,7 +312,7 @@ RSI (14): {rsi_str}
     try:
         return await ask_gigachat(prompt)
     except Exception as e:
-        print(f"❌ Ошибка AI: {e}")
+        logger.error(f"❌ Ошибка AI: {e}")
         return None
 
 # ---------- Рыночные данные ----------
@@ -436,7 +450,7 @@ def add_active_signal(asset_name, tf, signal_dict):
         active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней (исправлено) ----------
+# ---------- Проверка уровней ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']:
@@ -449,36 +463,30 @@ async def check_signal_levels(bot, signal_dict):
 
     is_buy = signal_dict['signal'] == 'BUY'
 
-    # Проверка SL
     if not signal_dict['sl_hit']:
         sl_hit = (is_buy and price <= levels['sl']) or (not is_buy and price >= levels['sl'])
         if sl_hit:
             signal_dict['sl_hit'] = True
             signal_dict['closed'] = True
-            # Если уже был TP1, это безубыток – не шлём уведомление
             if not signal_dict['tp1_hit']:
                 msg = (f"❌ Стоп-лосс сработал по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}")
                 await send_to_chat(FakeContext(bot), msg)
-                print(f"✅ Отправлено уведомление о SL для {asset_name} {signal_dict['tf']}")
+                logger.info(f"✅ Отправлено уведомление о SL для {asset_name} {signal_dict['tf']}")
             return
 
-    # Если SL не сработал, проверяем TP
     if not signal_dict['sl_hit']:
-        # TP1
         if not signal_dict['tp1_hit']:
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
                 signal_dict['tp1_hit'] = True
-                # Перенос стопа в безубыток
                 signal_dict['levels']['sl'] = levels['price']
                 msg = (f"✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}\n"
                        f"🔒 Стоп перенесён в безубыток")
                 await send_to_chat(FakeContext(bot), msg)
-                print(f"✅ Отправлено уведомление о TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
+                logger.info(f"✅ Отправлено уведомление о TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
         else:
-            # После TP1 проверяем TP2 и TP3
             if not signal_dict['tp2_hit']:
                 tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
                 if tp2_hit:
@@ -486,7 +494,7 @@ async def check_signal_levels(bot, signal_dict):
                     msg = (f"✅ TP2 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                            f"Вход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}")
                     await send_to_chat(FakeContext(bot), msg)
-                    print(f"✅ Отправлено уведомление о TP2 для {asset_name} {signal_dict['tf']}")
+                    logger.info(f"✅ Отправлено уведомление о TP2 для {asset_name} {signal_dict['tf']}")
             if not signal_dict['tp3_hit']:
                 tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
                 if tp3_hit:
@@ -494,7 +502,7 @@ async def check_signal_levels(bot, signal_dict):
                     msg = (f"✅ TP3 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                            f"Вход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f}")
                     await send_to_chat(FakeContext(bot), msg)
-                    print(f"✅ Отправлено уведомление о TP3 для {asset_name} {signal_dict['tf']}")
+                    logger.info(f"✅ Отправлено уведомление о TP3 для {asset_name} {signal_dict['tf']}")
 
 async def check_all_active_signals(bot):
     for asset_name, tf_dict in active_signals.items():
@@ -548,9 +556,9 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     await send_to_chat(context, msg)
 
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
-    print("⏰ Автоматическая проверка запущена")
+    logger.info("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
-        print("⚠️ Нет получателей")
+        logger.warning("⚠️ Нет получателей")
         return
     for name, asset in ASSETS.items():
         symbol = asset['symbol']
@@ -575,7 +583,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
 
                 if volume_now is not None and avg_volume is not None and avg_volume > 0:
                     if volume_now < avg_volume * 0.8:
-                        print(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
+                        logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                         continue
 
                 if tf != "5m" and vwap is not None and not np.isnan(vwap):
@@ -593,7 +601,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     if rsi_signal:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (rsi_signal == "BUY" and price <= vwap) or (rsi_signal == "SELL" and price >= vwap):
-                                print(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                logger.info(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
                                 continue
                         await handle_new_signal(name, tf, "rsi", rsi_signal, price, rsi=current_rsi, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
@@ -602,7 +610,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 if ema_signal and atr is not None:
                     if tf != "5m" and vwap is not None and not np.isnan(vwap):
                         if (ema_signal == "BUY" and price <= vwap) or (ema_signal == "SELL" and price >= vwap):
-                            print(f"ℹ️ Сигнал {ema_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                            logger.info(f"ℹ️ Сигнал {ema_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
                             continue
                     await handle_new_signal(name, tf, "ema", ema_signal, price,
                                             ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
@@ -617,7 +625,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     if combined_signal:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (combined_signal == "BUY" and price <= vwap) or (combined_signal == "SELL" and price >= vwap):
-                                print(f"ℹ️ Сигнал {combined_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                logger.info(f"ℹ️ Сигнал {combined_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
                                 continue
                         await handle_new_signal(name, tf, "combined", combined_signal, price,
                                                 rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
@@ -634,17 +642,17 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     if trend_ok:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (fast_cross == "BUY" and price <= vwap) or (fast_cross == "SELL" and price >= vwap):
-                                print(f"ℹ️ Сигнал {fast_cross} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                logger.info(f"ℹ️ Сигнал {fast_cross} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
                                 continue
                         await handle_new_signal(name, tf, "fast_ema", fast_cross, price,
                                                 cur_fast3=cur_fast3, cur_slow10=cur_slow10, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap,
                                                 higher_trend=trend if higher_tf else None, context=context)
             except Exception as e:
-                print(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
+                logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
     await check_all_active_signals(context.bot)
 
-# ---------- Отчёты (исправленные, без потенциального заработка) ----------
+# ---------- Отчёты ----------
 def get_moscow_time():
     return datetime.now(timezone.utc) + timedelta(hours=3)
 
@@ -655,7 +663,6 @@ def calculate_stats(signals):
     tp1_count = sum(1 for s in signals if s['tp1_hit'])
     tp2_count = sum(1 for s in signals if s['tp2_hit'])
     tp3_count = sum(1 for s in signals if s['tp3_hit'])
-    # SL только те, где был sl и не было ни одного TP
     true_sl = sum(1 for s in signals if s['sl_hit'] and not (s['tp1_hit'] or s['tp2_hit'] or s['tp3_hit']))
     closed = tp1_count + true_sl
     success_rate = (tp1_count / closed * 100) if closed > 0 else 0
@@ -733,7 +740,6 @@ def format_report(signals, title):
         lines.append(f"Общая успешность: ~{all_stats['success_rate']:.1f}%")
         lines.append("")
 
-    # По инструментам
     asset_stats = {}
     for asset, lst in stats_by_asset.items():
         st = calculate_stats(lst)
@@ -744,7 +750,6 @@ def format_report(signals, title):
         lines.append(f"{asset}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
     lines.append("")
 
-    # По типам сигналов
     type_stats = {}
     for typ, lst in stats_by_type.items():
         st = calculate_stats(lst)
@@ -773,9 +778,9 @@ async def send_to_chat(context, text):
         if chat_id is not None:
             await context.bot.send_message(chat_id=chat_id, text=text)
         if CHANNEL_ID is None and chat_id is None:
-            print("⚠️ Нет получателя для сообщения")
+            logger.warning("⚠️ Нет получателя для сообщения")
     except Exception as e:
-        print(f"❌ Ошибка в send_to_chat: {e}")
+        logger.error(f"❌ Ошибка в send_to_chat: {e}")
 
 async def channel_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global SEND_TO_CHANNEL
@@ -787,13 +792,13 @@ async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEND_TO_CHANNEL = False
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
-# ---------- Утренний обзор (ручной и автоматический) ----------
+# ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
-    print("📊 Формирование утреннего обзора...")
+    logger.info("📊 Формирование утреннего обзора...")
     if context is None and telegram_app:
         context = FakeContext(telegram_app.bot)
     elif context is None:
-        print("❌ Нет контекста для отправки утреннего обзора")
+        logger.error("❌ Нет контекста для отправки утреннего обзора")
         return
     msg = "🌅 **Утренний обзор рынка**\n\n"
     for name, asset in ASSETS.items():
@@ -809,7 +814,7 @@ async def send_morning_report(context=None):
         sentiment = news_sentiment.get(asset_name, "Нет данных")
         msg += f"**{asset_name}**: {sentiment}\n"
     await send_to_chat(context, msg)
-    print("✅ Утренний обзор отправлен")
+    logger.info("✅ Утренний обзор отправлен")
 
 async def morning_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Формирую утренний обзор...")
@@ -819,7 +824,7 @@ async def morning_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_scheduler(app):
     job_queue = app.job_queue
     if job_queue is None:
-        print("⚠️ JobQueue не доступен.")
+        logger.warning("⚠️ JobQueue не доступен.")
         return
     for job in job_queue.jobs():
         job.schedule_removal()
@@ -830,19 +835,19 @@ async def start_scheduler(app):
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=3600, first=30)
-    print("📅 Планировщик запущен")
+    logger.info("📅 Планировщик запущен")
 
 async def daily_report_job(context):
-    print("📊 Запущена задача daily_report")
+    logger.info("📊 Запущена задача daily_report")
     report = await generate_daily_report()
     await send_to_chat(context, report)
 
 async def weekly_report_job(context):
-    print("📊 Запущена задача weekly_report")
+    logger.info("📊 Запущена задача weekly_report")
     report = await generate_weekly_report()
     await send_to_chat(context, report)
 
-# ---------- Команды бота (без изменений) ----------
+# ---------- Команды бота ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
@@ -963,23 +968,30 @@ async def ai_command(update, context):
 # ---------- Запуск ----------
 async def post_init(app):
     await start_scheduler(app)
+    # Отправляем утренний обзор при старте, если сейчас от 6 до 12 МСК
+    now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
+    if 6 <= now_msk.hour <= 12:
+        try:
+            await send_morning_report(FakeContext(app.bot))
+        except Exception as e:
+            logger.error(f"❌ Ошибка стартового обзора: {e}")
 
 def run_bot():
     global telegram_app
-    print("🤖 Бот запускается...")
+    logger.info("🤖 Бот запускается...")
     if GIGACHAT_AUTH_KEY:
-        print("🧠 GigaChat AI включён")
+        logger.info("🧠 GigaChat AI включён")
     else:
-        print("⚠️ GigaChat AI отключён")
+        logger.warning("⚠️ GigaChat AI отключён")
 
-    print("🔑 Проверяю доступ к Bybit TradFi...")
+    logger.info("🔑 Проверяю доступ к Bybit TradFi...")
     result = check_bybit_tradfi()
-    print(f"ℹ️ Результат проверки Bybit: {result}, GOLD_SYMBOL={GOLD_SYMBOL}")
+    logger.info(f"ℹ️ Результат проверки Bybit: {result}, GOLD_SYMBOL={GOLD_SYMBOL}")
 
-    print("📋 Конфигурация таймфреймов:")
+    logger.info("📋 Конфигурация таймфреймов:")
     for asset, tfs in ASSET_TIMEFRAMES.items():
-        print(f"  {asset}: {tfs}")
-    print(f"ℹ️ GOLD источник: {GOLD_SYMBOL}")
+        logger.info(f"  {asset}: {tfs}")
+    logger.info(f"ℹ️ GOLD источник: {GOLD_SYMBOL}")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
@@ -996,20 +1008,7 @@ def run_bot():
     app.add_handler(CommandHandler("channel_off", channel_off))
 
     telegram_app = app
-
-    # Отправка утреннего обзора при старте, если ещё не было
-    async def startup_morning():
-        await asyncio.sleep(5)
-        now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
-        if 6 <= now_msk.hour <= 12:
-            try:
-                await send_morning_report(FakeContext(app.bot))
-            except Exception as e:
-                print(f"❌ Ошибка стартового обзора: {e}")
-
-    asyncio.ensure_future(startup_morning())
-
-    print("✅ Бот готов")
+    logger.info("✅ Бот готов")
     app.run_polling(drop_pending_updates=True)
 
 def main():
