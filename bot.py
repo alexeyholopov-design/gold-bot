@@ -64,12 +64,11 @@ ASSET_TIMEFRAMES = {
 }
 
 GOLD_SYMBOL = "XAUT-USDT"
-
 ASSETS = {
-    "GOLD": {"symbol": GOLD_SYMBOL},
-    "BTC":  {"symbol": "BTC-USDT"},
-    "ETH":  {"symbol": "ETH-USDT"},
-    "SOL":  {"symbol": "SOL-USDT"},
+    "GOLD": {"symbol": GOLD_SYMBOL, "tag": "#XAU"},
+    "BTC":  {"symbol": "BTC-USDT", "tag": "#BTC"},
+    "ETH":  {"symbol": "ETH-USDT", "tag": "#ETH"},
+    "SOL":  {"symbol": "SOL-USDT", "tag": "#SOL"},
 }
 
 for name, asset in ASSETS.items():
@@ -77,14 +76,9 @@ for name, asset in ASSETS.items():
     for tf in ASSET_TIMEFRAMES[name]:
         active_signals[name][tf] = []
 
-RSI_PERIOD = 14
-RSI_OVERBOUGHT = 70
-RSI_OVERSOLD = 30
+RSI_PERIOD = 14; RSI_OVERBOUGHT = 70; RSI_OVERSOLD = 30
 LOOKBACK = 50
-EMA_FAST = 20
-EMA_SLOW = 50
-EMA_FAST_FAST = 3
-EMA_SLOW_FAST = 10
+EMA_FAST = 20; EMA_SLOW = 50; EMA_FAST_FAST = 3; EMA_SLOW_FAST = 10
 
 ATR_MULTIPLIERS = {
     "5m":  {"SL": 1.2, "TP1": 1.5, "TP2": 2.0, "TP3": 3.0},
@@ -94,14 +88,11 @@ ATR_MULTIPLIERS = {
 
 def safe_format(value, format_spec=":.2f"):
     try:
-        if value is None:
-            return "0.00"
+        if value is None: return "0.00"
         num = float(value)
-        if np.isnan(num) or not np.isfinite(num):
-            return "0.00"
+        if np.isnan(num) or not np.isfinite(num): return "0.00"
         return f"{num:{format_spec}}"
-    except (ValueError, TypeError):
-        return str(value)
+    except: return str(value)
 
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
@@ -112,11 +103,7 @@ def bybit_sign_request(params):
     recv_window = "5000"
     param_str = urllib.parse.urlencode(sorted(params.items()))
     sign_str = f"{timestamp}{BYBIT_API_KEY}{recv_window}{param_str}"
-    signature = hmac.new(
-        bytes(BYBIT_API_SECRET, "utf-8"),
-        bytes(sign_str, "utf-8"),
-        hashlib.sha256
-    ).hexdigest()
+    signature = hmac.new(bytes(BYBIT_API_SECRET, "utf-8"), bytes(sign_str, "utf-8"), hashlib.sha256).hexdigest()
     return {
         "X-BAPI-API-KEY": BYBIT_API_KEY,
         "X-BAPI-TIMESTAMP": timestamp,
@@ -148,7 +135,7 @@ def check_bybit_tradfi():
             logger.error(f"❌ Bybit вернул ошибку: {data.get('retMsg', 'Unknown error')}")
             return False
     except Exception as e:
-        logger.error(f"❌ Исключение при проверке Bybit TradFi: {type(e).__name__}: {e}")
+        logger.error(f"❌ Исключение при проверке Bybit TradFi: {e}")
         return False
 
 def get_bybit_price(symbol):
@@ -161,8 +148,7 @@ def get_bybit_price(symbol):
             data = resp.json()
             if data.get("retCode") == 0:
                 return float(data["result"]["list"][0]["lastPrice"])
-    except:
-        pass
+    except: pass
     return None
 
 # ---------- GigaChat ----------
@@ -193,16 +179,11 @@ async def get_gigachat_token(force=False):
 
 async def ask_gigachat(prompt):
     token = await get_gigachat_token()
-    if not token:
-        return None
+    if not token: return None
     try:
         url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {
-            "model": "GigaChat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3, "max_tokens": 500
-        }
+        payload = {"model": "GigaChat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
         response = requests.post(url, headers=headers, json=payload, verify=False, timeout=15)
         if response.status_code == 200:
             data = response.json()
@@ -221,34 +202,26 @@ async def ask_gigachat(prompt):
         logger.error(f"❌ GigaChat error: {e}")
     return None
 
-# ---------- Новости ----------
+# ---------- Новости (исправлены RSS для крипты) ----------
 def fetch_news(asset):
     rss_urls = {
-        "GOLD": "https://www.investing.com/rss/news_285.rss",
-        "BTC":  "https://www.cryptopanic.com/news/rss/",
-        "ETH":  "https://www.cryptopanic.com/news/rss/",
-        "SOL":  "https://www.cryptopanic.com/news/rss/",
+        "GOLD": "https://www.kitco.com/rss/",
+        "BTC":  "https://cointelegraph.com/rss/tag/bitcoin",
+        "ETH":  "https://cointelegraph.com/rss/tag/ethereum",
+        "SOL":  "https://cointelegraph.com/rss/tag/solana",
     }
     url = rss_urls.get(asset)
-    if not url:
-        return ""
+    if not url: return ""
     try:
         feed = feedparser.parse(url)
         entries = feed.entries[:5]
         titles = [entry.title for entry in entries if hasattr(entry, 'title')]
         return " ".join(titles) if titles else ""
-    except:
-        return ""
+    except: return ""
 
 async def analyze_news_with_gigachat(asset, news_text):
-    if not news_text:
-        return "Новостей нет."
-    prompt = f"""
-Проанализируй новости по активу {asset}. Новости:
-{news_text}
-
-Дай КРАТКУЮ оценку в 1-2 предложения: общее настроение, ключевое событие, влияние на цену в ближайшие часы.
-"""
+    if not news_text: return "Новостей нет."
+    prompt = f"Проанализируй новости по активу {asset}. Новости:\n{news_text}\n\nДай КРАТКУЮ оценку в 1-2 предложения: общее настроение, ключевое событие, влияние на цену в ближайшие часы."
     return await ask_gigachat(prompt)
 
 async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
@@ -270,8 +243,7 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
 # ---------- AI анализ сигналов ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
                           atr=None, volume=None, avg_volume=None, vwap=None, higher_trend=None):
-    if not GIGACHAT_AUTH_KEY:
-        return None
+    if not GIGACHAT_AUTH_KEY: return None
     direction = "покупку" if signal == "BUY" else "продажу"
     price_str = safe_format(price)
     rsi_str = f"{float(rsi):.1f}" if rsi is not None else "N/A"
@@ -306,8 +278,7 @@ RSI (14): {rsi_str}
 3. Рекомендация: BUY/SELL/HOLD с пояснением.
 4. Оценка силы сигнала: напиши "✅ СИЛЬНЫЙ СИГНАЛ" или "⚠️ СЛАБЫЙ СИГНАЛ"
 """
-    try:
-        return await ask_gigachat(prompt)
+    try: return await ask_gigachat(prompt)
     except Exception as e:
         logger.error(f"❌ Ошибка AI: {e}")
         return None
@@ -320,39 +291,31 @@ def get_current_price(symbol):
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
         params = {"symbol": symbol}
         response = requests.get(url, params=params, timeout=5)
-        if response.status_code != 200:
-            return None
+        if response.status_code != 200: return None
         data = response.json()
-        if data.get("code") == 0:
-            return float(data["data"]["price"])
+        if data.get("code") == 0: return float(data["data"]["price"])
         return None
-    except:
-        return None
+    except: return None
 
 def get_klines(symbol, interval, limit=100):
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
         params = {"symbol": symbol, "interval": interval, "limit": limit}
         response = requests.get(url, params=params, timeout=5)
-        if response.status_code != 200:
-            return None
+        if response.status_code != 200: return None
         data = response.json()
-        if data.get("code") != 0:
-            return None
+        if data.get("code") != 0: return None
         candles = data["data"]
         df = pd.DataFrame(candles)
-        df.rename(columns={'open': 'Open', 'close': 'Close', 'high': 'High', 'low': 'Low',
-                           'volume': 'Volume', 'time': 'Timestamp'}, inplace=True)
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
+        df.rename(columns={'open':'Open','close':'Close','high':'High','low':'Low','volume':'Volume','time':'Timestamp'}, inplace=True)
+        for col in ["Open","High","Low","Close","Volume"]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df.dropna(subset=["Open", "High", "Low", "Close"])
-    except:
-        return None
+        return df.dropna(subset=["Open","High","Low","Close"])
+    except: return None
 
 def get_rsi_and_bars(symbol, interval):
     df = get_klines(symbol, interval, limit=LOOKBACK)
-    if df is None or len(df) < 2:
-        return None, None, None, None
+    if df is None or len(df) < 2: return None, None, None, None
     close = df['Close']
     delta = close.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
@@ -365,8 +328,7 @@ def get_rsi_and_bars(symbol, interval):
 
 def get_ema_cross(symbol, interval, fast, slow):
     df = get_klines(symbol, interval, limit=LOOKBACK)
-    if df is None or len(df) < slow:
-        return None, None, None, None, None
+    if df is None or len(df) < slow: return None, None, None, None, None
     close = df['Close'].values
     ema_fast = np.zeros_like(close); ema_slow = np.zeros_like(close)
     alpha_fast = 2/(fast+1); alpha_slow = 2/(slow+1)
@@ -377,29 +339,23 @@ def get_ema_cross(symbol, interval, fast, slow):
     cur_fast = ema_fast[-1]; cur_slow = ema_slow[-1]
     prev_fast = ema_fast[-2]; prev_slow = ema_slow[-2]
     signal = None
-    if prev_fast <= prev_slow and cur_fast > cur_slow:
-        signal = "BUY"
-    elif prev_fast >= prev_slow and cur_fast < cur_slow:
-        signal = "SELL"
+    if prev_fast <= prev_slow and cur_fast > cur_slow: signal = "BUY"
+    elif prev_fast >= prev_slow and cur_fast < cur_slow: signal = "SELL"
     return signal, cur_fast, cur_slow, prev_fast, prev_slow
 
 def get_atr_value(symbol, interval):
     df = get_klines(symbol, interval, limit=LOOKBACK)
-    if df is None or len(df) < 14:
-        return None
+    if df is None or len(df) < 14: return None
     high = df['High'].values; low = df['Low'].values; close = df['Close'].values
     tr = np.maximum(high-low, np.maximum(abs(high-np.roll(close,1)), abs(low-np.roll(close,1))))
     tr[0] = high[0]-low[0]
-    atr = np.zeros_like(tr)
-    atr[:14] = np.mean(tr[:14])
-    for i in range(14, len(tr)):
-        atr[i] = (atr[i-1]*13 + tr[i])/14
+    atr = np.zeros_like(tr); atr[:14] = np.mean(tr[:14])
+    for i in range(14, len(tr)): atr[i] = (atr[i-1]*13 + tr[i])/14
     return atr[-1]
 
 def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50):
     df = get_klines(symbol, interval=check_interval, limit=LOOKBACK)
-    if df is None or len(df) < slow:
-        return None
+    if df is None or len(df) < slow: return None
     close = df['Close'].values
     ema_fast = np.zeros_like(close); ema_slow = np.zeros_like(close)
     alpha_fast = 2/(fast+1); alpha_slow = 2/(slow+1)
@@ -414,92 +370,100 @@ def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50)
 def calculate_atr_levels(price, atr, signal_type, tf):
     mult = ATR_MULTIPLIERS.get(tf, {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0})
     if signal_type == "BUY":
-        sl = price - atr * mult["SL"]
-        tp1 = price + atr * mult["TP1"]
-        tp2 = price + atr * mult["TP2"]
-        tp3 = price + atr * mult["TP3"]
+        sl = price - atr * mult["SL"]; tp1 = price + atr * mult["TP1"]; tp2 = price + atr * mult["TP2"]; tp3 = price + atr * mult["TP3"]
     else:
-        sl = price + atr * mult["SL"]
-        tp1 = price - atr * mult["TP1"]
-        tp2 = price - atr * mult["TP2"]
-        tp3 = price - atr * mult["TP3"]
+        sl = price + atr * mult["SL"]; tp1 = price - atr * mult["TP1"]; tp2 = price - atr * mult["TP2"]; tp3 = price - atr * mult["TP3"]
     return {'price': round(price,2), 'sl': round(sl,2), 'tp1': round(tp1,2),
             'tp2': round(tp2,2), 'tp3': round(tp3,2), 'atr': round(atr,2)}
 
 def create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis=None):
     return {
         'timestamp': datetime.now(timezone.utc),
-        'asset': asset_name,
-        'tf': tf,
-        'type': signal_type,
-        'signal': signal,
+        'asset': asset_name, 'tf': tf, 'type': signal_type, 'signal': signal,
         'levels': levels.copy(),
         'tp1_hit': False, 'tp2_hit': False, 'tp3_hit': False,
         'sl_hit': False, 'closed': False,
-        'ai_analysis': ai_analysis,
-        'adjusted_by_ai': False
+        'ai_analysis': ai_analysis, 'adjusted_by_ai': False
     }
 
 def add_active_signal(asset_name, tf, signal_dict):
-    if asset_name not in active_signals:
-        active_signals[asset_name] = {}
-    if tf not in active_signals[asset_name]:
-        active_signals[asset_name][tf] = []
+    if asset_name not in active_signals: active_signals[asset_name] = {}
+    if tf not in active_signals[asset_name]: active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней ----------
+# ---------- Проверка уровней (с закрытием при макс. TP или SL после БУ) ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
-    if signal_dict['closed']:
-        return
+    if signal_dict['closed']: return
     asset_name = signal_dict['asset']
     symbol = ASSETS[asset_name]['symbol']
     price = get_current_price(symbol)
-    if price is None:
-        return
+    if price is None: return
 
     is_buy = signal_dict['signal'] == 'BUY'
+    now = datetime.now(timezone.utc)
+    minutes = (now - signal_dict['timestamp']).total_seconds() / 60
+    tag = ASSETS[asset_name]['tag']
 
+    # Проверка SL
     if not signal_dict['sl_hit']:
         sl_hit = (is_buy and price <= levels['sl']) or (not is_buy and price >= levels['sl'])
         if sl_hit:
             signal_dict['sl_hit'] = True
-            signal_dict['closed'] = True
-            if not signal_dict['tp1_hit']:
-                msg = (f"❌ Стоп-лосс сработал по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
-                       f"Вход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}")
+            if not signal_dict['tp1_hit']:   # чистый SL
+                signal_dict['closed'] = True
+                msg = (f"{tag} ❌ Стоп-лосс сработал по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                       f"Вход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}\n"
+                       f"⏱ Время сделки: {minutes:.1f} мин.")
                 await send_to_chat(FakeContext(bot), msg)
-                logger.info(f"✅ Отправлено уведомление о SL для {asset_name} {signal_dict['tf']}")
+            else:   # SL после безубытка – завершаем с уведомлением о безубытке
+                signal_dict['closed'] = True
+                msg = (f"{tag} 🔒 Безубыток по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                       f"Вход: ${levels['price']:.2f}\nСтоп: ${levels['sl']:.2f}\n"
+                       f"⏱ Время сделки: {minutes:.1f} мин.")
+                await send_to_chat(FakeContext(bot), msg)
+            logger.info(f"✅ Завершение сделки для {asset_name} {signal_dict['tf']}")
             return
 
     if not signal_dict['sl_hit']:
+        # TP1
         if not signal_dict['tp1_hit']:
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
                 signal_dict['tp1_hit'] = True
-                signal_dict['levels']['sl'] = levels['price']
-                msg = (f"✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                signal_dict['levels']['sl'] = levels['price']   # перенос стопа в безубыток
+                msg = (f"{tag} ✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}\n"
-                       f"🔒 Стоп перенесён в безубыток")
+                       f"🔒 Стоп перенесён в безубыток\n⏱ Время сделки: {minutes:.1f} мин.")
                 await send_to_chat(FakeContext(bot), msg)
-                logger.info(f"✅ Отправлено уведомление о TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
+                logger.info(f"✅ TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
         else:
+            # TP2 и TP3
             if not signal_dict['tp2_hit']:
                 tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
                 if tp2_hit:
                     signal_dict['tp2_hit'] = True
-                    msg = (f"✅ TP2 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
-                           f"Вход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}")
+                    close_trade = signal_dict['type'] != 'fast_ema'   # для не-fast_ema закрываем на TP2
+                    if close_trade:
+                        signal_dict['closed'] = True
+                        close_msg = " (сделка завершена)"
+                    else:
+                        close_msg = ""
+                    msg = (f"{tag} ✅ TP2 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                           f"Вход: ${levels['price']:.2f}\nTP2: ${levels['tp2']:.2f}{close_msg}\n"
+                           f"⏱ Время сделки: {minutes:.1f} мин.")
                     await send_to_chat(FakeContext(bot), msg)
-                    logger.info(f"✅ Отправлено уведомление о TP2 для {asset_name} {signal_dict['tf']}")
-            if not signal_dict['tp3_hit']:
+                    logger.info(f"✅ TP2 для {asset_name} {signal_dict['tf']}")
+            if not signal_dict['tp3_hit'] and not signal_dict['closed']:
                 tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
                 if tp3_hit:
                     signal_dict['tp3_hit'] = True
-                    msg = (f"✅ TP3 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
-                           f"Вход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f}")
+                    signal_dict['closed'] = True   # TP3 всегда завершает сделку
+                    msg = (f"{tag} ✅ TP3 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
+                           f"Вход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f} (сделка завершена)\n"
+                           f"⏱ Время сделки: {minutes:.1f} мин.")
                     await send_to_chat(FakeContext(bot), msg)
-                    logger.info(f"✅ Отправлено уведомление о TP3 для {asset_name} {signal_dict['tf']}")
+                    logger.info(f"✅ TP3 для {asset_name} {signal_dict['tf']}")
 
 async def check_all_active_signals(bot):
     for asset_name, tf_dict in active_signals.items():
@@ -521,8 +485,7 @@ def has_open_signal(asset_name, tf, signal_type, direction):
 async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None, ema_fast=None, ema_slow=None,
                             cur_fast3=None, cur_slow10=None, atr=None, volume=None, avg_volume=None, vwap=None,
                             higher_trend=None, context=None):
-    if has_open_signal(asset_name, tf, signal_type, signal):
-        return
+    if has_open_signal(asset_name, tf, signal_type, signal): return
     levels = calculate_atr_levels(price, atr, signal, tf)
     ai_analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi,
                                         ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
@@ -534,25 +497,21 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     stars = get_signal_stars(signal_type)
     direction = "покупку" if signal == "BUY" else "продажу"
     symbol = ASSETS[asset_name]['symbol']
-    msg = f"{stars} 📢 Сигнал на {direction} по {signal_type.upper()} для {asset_name} ({symbol}) [{tf}]\n"
+    tag = ASSETS[asset_name]['tag']
+    msg = f"{tag} {stars} 📢 Сигнал на {direction} по {signal_type.upper()} для {asset_name} ({symbol}) [{tf}]\n"
     msg += f"💰 Вход: ${levels['price']:.2f}\n"
     msg += f"🛑 SL: ${levels['sl']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('SL', '?')})\n"
     msg += f"🎯 TP1: ${levels['tp1']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP1', '?')})\n"
     msg += f"🎯 TP2: ${levels['tp2']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP2', '?')})\n"
     msg += f"🎯 TP3: ${levels['tp3']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
-    if rsi is not None:
-        msg += f"📊 RSI: {float(rsi):.1f}\n"
-    if ema_fast is not None:
-        msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
-    if cur_fast3 is not None:
-        msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
-    if volume is not None:
-        msg += f"📊 Объём: {float(volume):.0f} | Средний: {float(avg_volume):.0f} | VWAP: ${float(vwap):.2f}\n"
-    if ai_analysis:
-        msg += f"\n🧠 {ai_analysis}"
+    if rsi is not None: msg += f"📊 RSI: {float(rsi):.1f}\n"
+    if ema_fast is not None: msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
+    if cur_fast3 is not None: msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
+    if volume is not None: msg += f"📊 Объём: {float(volume):.0f} | Средний: {float(avg_volume):.0f} | VWAP: ${float(vwap):.2f}\n"
+    if ai_analysis: msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
-# ---------- ОСНОВНАЯ ЛОГИКА (БЕЗ ОТДЕЛЬНОГО RSI) ----------
+# ---------- Основная логика (без отдельных RSI) ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
@@ -562,13 +521,10 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
         symbol = asset['symbol']
         for tf in ASSET_TIMEFRAMES[name]:
             price = get_current_price(symbol)
-            if price is None:
-                continue
+            if price is None: continue
             try:
                 df_vol = get_klines(symbol, tf, limit=50)
-                avg_volume = None
-                vwap = None
-                volume_now = None
+                avg_volume = None; vwap = None; volume_now = None
                 if df_vol is not None and len(df_vol) >= 2:
                     volume_now = df_vol['Volume'].iloc[-1]
                     if pd.notna(volume_now):
@@ -576,8 +532,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                         typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
                         if df_vol['Volume'].sum() > 0:
                             vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
-                        else:
-                            vwap = price
+                        else: vwap = price
 
                 vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
                 if volume_now is not None and avg_volume is not None and avg_volume > 0:
@@ -585,47 +540,41 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                         logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                         continue
 
-                if tf != "5m" and vwap is not None and not np.isnan(vwap):
-                    pass
+                if tf != "5m" and vwap is not None and not np.isnan(vwap): pass
 
                 current_rsi, prev_rsi, _, _ = get_rsi_and_bars(symbol, tf)
                 atr = get_atr_value(symbol, tf)
 
-                # --- EMA сигнал ---
+                # EMA
                 ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf, EMA_FAST, EMA_SLOW)
                 if ema_signal and atr is not None:
                     if tf != "5m" and vwap is not None and not np.isnan(vwap):
                         if (ema_signal == "BUY" and price <= vwap) or (ema_signal == "SELL" and price >= vwap):
-                            logger.info(f"ℹ️ Сигнал {ema_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                            logger.info(f"ℹ️ EMA {ema_signal} для {name} {tf} пропущен: VWAP")
                             continue
                     await handle_new_signal(name, tf, "ema", ema_signal, price,
                                             ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                             volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-                # --- Combined сигнал (RSI + EMA) ---
+                # Combined (RSI + EMA)
                 rsi_signal = None
-                if current_rsi is not None and prev_rsi is not None and atr is not None:
-                    if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD:
-                        rsi_signal = "BUY"
-                    elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
-                        rsi_signal = "SELL"
+                if current_rsi is not None and prev_rsi is not None:
+                    if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD: rsi_signal = "BUY"
+                    elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT: rsi_signal = "SELL"
                 if rsi_signal and ema_signal and atr is not None:
-                    if rsi_signal == "BUY" and cur_fast > cur_slow:
-                        combined_signal = "BUY"
-                    elif rsi_signal == "SELL" and cur_fast < cur_slow:
-                        combined_signal = "SELL"
-                    else:
-                        combined_signal = None
+                    if rsi_signal == "BUY" and cur_fast > cur_slow: combined_signal = "BUY"
+                    elif rsi_signal == "SELL" and cur_fast < cur_slow: combined_signal = "SELL"
+                    else: combined_signal = None
                     if combined_signal:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (combined_signal == "BUY" and price <= vwap) or (combined_signal == "SELL" and price >= vwap):
-                                logger.info(f"ℹ️ Сигнал {combined_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                logger.info(f"ℹ️ Combined для {name} {tf} пропущен: VWAP")
                                 continue
                         await handle_new_signal(name, tf, "combined", combined_signal, price,
                                                 rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-                # --- FAST EMA сигнал ---
+                # FAST EMA
                 fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, tf, EMA_FAST_FAST, EMA_SLOW_FAST)
                 if fast_cross and atr is not None:
                     higher_tf = "1h" if tf == "15m" else "15m" if tf != "1h" else None
@@ -637,7 +586,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     if trend_ok:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (fast_cross == "BUY" and price <= vwap) or (fast_cross == "SELL" and price >= vwap):
-                                logger.info(f"ℹ️ Сигнал {fast_cross} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
+                                logger.info(f"ℹ️ FAST_EMA для {name} {tf} пропущен: VWAP")
                                 continue
                         await handle_new_signal(name, tf, "fast_ema", fast_cross, price,
                                                 cur_fast3=cur_fast3, cur_slow10=cur_slow10, atr=atr,
@@ -653,8 +602,7 @@ def get_moscow_time():
 
 def calculate_stats(signals):
     total = len(signals)
-    if total == 0:
-        return None
+    if total == 0: return None
     tp1_count = sum(1 for s in signals if s['tp1_hit'])
     tp2_count = sum(1 for s in signals if s['tp2_hit'])
     tp3_count = sum(1 for s in signals if s['tp3_hit'])
@@ -662,13 +610,8 @@ def calculate_stats(signals):
     closed = tp1_count + true_sl
     success_rate = (tp1_count / closed * 100) if closed > 0 else 0
     return {
-        'total': total,
-        'tp1': tp1_count,
-        'tp2': tp2_count,
-        'tp3': tp3_count,
-        'sl': true_sl,
-        'closed': closed,
-        'success_rate': success_rate
+        'total': total, 'tp1': tp1_count, 'tp2': tp2_count, 'tp3': tp3_count,
+        'sl': true_sl, 'closed': closed, 'success_rate': success_rate
     }
 
 def generate_insights(stats_by_asset, stats_by_type):
@@ -717,8 +660,7 @@ async def generate_today_report():
     return format_report(signals, f"📊 Отчёт за сегодня ({now.strftime('%d.%m.%Y')})")
 
 def format_report(signals, title):
-    if not signals:
-        return f"{title}\n\nСигналов не было."
+    if not signals: return f"{title}\n\nСигналов не было."
 
     stats_by_asset = defaultdict(list)
     stats_by_type = defaultdict(list)
@@ -738,8 +680,7 @@ def format_report(signals, title):
     asset_stats = {}
     for asset, lst in stats_by_asset.items():
         st = calculate_stats(lst)
-        if st:
-            asset_stats[asset] = st
+        if st: asset_stats[asset] = st
     lines.append("📌 По инструментам:")
     for asset, st in sorted(asset_stats.items()):
         lines.append(f"{asset}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
@@ -748,8 +689,7 @@ def format_report(signals, title):
     type_stats = {}
     for typ, lst in stats_by_type.items():
         st = calculate_stats(lst)
-        if st:
-            type_stats[typ] = st
+        if st: type_stats[typ] = st
     lines.append("🔹 По типам сигналов:")
     for typ, st in sorted(type_stats.items()):
         lines.append(f"{typ.upper()}: всего {st['total']}, TP1: {st['tp1']}, успешность {st['success_rate']:.1f}%")
@@ -763,8 +703,7 @@ def format_report(signals, title):
     return "\n".join(lines)
 
 class FakeContext:
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self, bot): self.bot = bot
 
 async def send_to_chat(context, text):
     try:
@@ -873,8 +812,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not s['closed']:
                     direction = "BUY" if s['signal'] == "BUY" else "SELL"
                     msg += f"{name} {tf} {s['type']}: {direction} (вход {s['levels']['price']:.2f})\n"
-    if msg == "📌 Активные сигналы:\n":
-        msg += "Нет активных сигналов."
+    if msg == "📌 Активные сигналы:\n": msg += "Нет активных сигналов."
     await update.message.reply_text(msg)
 
 async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_name):
@@ -892,8 +830,7 @@ async def asset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, asset_na
     for tf in ASSET_TIMEFRAMES[asset_name]:
         msg += f"⏱ {tf}\n"
         sigs = active_signals.get(asset_name, {}).get(tf, [])
-        if not sigs:
-            msg += "  Нет активных сигналов.\n"
+        if not sigs: msg += "  Нет активных сигналов.\n"
         else:
             for s in sigs:
                 if s['closed']: continue
@@ -918,8 +855,7 @@ async def crypto(update, context):
             if sigs:
                 signals_str = ", ".join(f"{s['type']}:{s['signal']}" for s in sigs)
                 msg += f"  {tf}: {signals_str}\n"
-            else:
-                msg += f"  {tf}: нет\n"
+            else: msg += f"  {tf}: нет\n"
     await update.message.reply_text(msg)
 
 async def status(update, context):
@@ -929,8 +865,7 @@ async def status(update, context):
             sigs = [s for s in active_signals.get(name, {}).get(tf, []) if not s['closed']]
             for s in sigs:
                 msg += f"{name} {tf} {s['type']}: {s['signal']} (вход {s['levels']['price']:.2f})\n"
-    if msg == "📌 АКТИВНЫЕ СИГНАЛЫ:\n\n":
-        msg += "Нет активных сигналов."
+    if msg == "📌 АКТИВНЫЕ СИГНАЛЫ:\n\n": msg += "Нет активных сигналов."
     await update.message.reply_text(msg)
 
 async def today_report(update, context):
