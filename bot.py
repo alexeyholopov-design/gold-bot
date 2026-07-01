@@ -63,7 +63,6 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
-# Оставляем XAUT-USDT
 GOLD_SYMBOL = "XAUT-USDT"
 
 ASSETS = {
@@ -222,7 +221,7 @@ async def ask_gigachat(prompt):
         logger.error(f"❌ GigaChat error: {e}")
     return None
 
-# ---------- Новости (Kitco для GOLD, краткий AI) ----------
+# ---------- Новости ----------
 def fetch_news(asset):
     rss_urls = {
         "GOLD": "https://www.kitco.com/rss/",
@@ -553,6 +552,7 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
         msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
+# ---------- ОСНОВНАЯ ЛОГИКА (БЕЗ ОТДЕЛЬНОГО RSI) ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
@@ -569,7 +569,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 avg_volume = None
                 vwap = None
                 volume_now = None
-                avg_atr = None
                 if df_vol is not None and len(df_vol) >= 2:
                     volume_now = df_vol['Volume'].iloc[-1]
                     if pd.notna(volume_now):
@@ -579,15 +578,11 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                             vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
                         else:
                             vwap = price
-                    tr = np.maximum(df_vol['High'] - df_vol['Low'],
-                                    np.maximum(abs(df_vol['High'] - df_vol['Close'].shift()),
-                                               abs(df_vol['Low'] - df_vol['Close'].shift())))
-                    avg_atr = tr.mean()
 
                 vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
                 if volume_now is not None and avg_volume is not None and avg_volume > 0:
                     if volume_now < avg_volume * vol_threshold:
-                        logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f} (порог {vol_threshold*100:.0f}%)")
+                        logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                         continue
 
                 if tf != "5m" and vwap is not None and not np.isnan(vwap):
@@ -596,23 +591,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 current_rsi, prev_rsi, _, _ = get_rsi_and_bars(symbol, tf)
                 atr = get_atr_value(symbol, tf)
 
-                rsi_signal = None
-                if current_rsi is not None and prev_rsi is not None and atr is not None:
-                    if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD:
-                        rsi_signal = "BUY"
-                    elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
-                        rsi_signal = "SELL"
-                    if rsi_signal:
-                        if avg_atr is not None and atr <= avg_atr:
-                            logger.info(f"ℹ️ RSI-сигнал для {name} {tf} пропущен: ATR={atr:.4f} <= средний ATR={avg_atr:.4f}")
-                            continue
-                        if tf != "5m" and vwap is not None and not np.isnan(vwap):
-                            if (rsi_signal == "BUY" and price <= vwap) or (rsi_signal == "SELL" and price >= vwap):
-                                logger.info(f"ℹ️ Сигнал {rsi_signal} для {name} {tf} пропущен: VWAP={vwap:.2f}, цена={price:.2f}")
-                                continue
-                        await handle_new_signal(name, tf, "rsi", rsi_signal, price, rsi=current_rsi, atr=atr,
-                                                volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
-
+                # --- EMA сигнал ---
                 ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf, EMA_FAST, EMA_SLOW)
                 if ema_signal and atr is not None:
                     if tf != "5m" and vwap is not None and not np.isnan(vwap):
@@ -623,12 +602,20 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                             ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                             volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-                combined_signal = None
+                # --- Combined сигнал (RSI + EMA) ---
+                rsi_signal = None
+                if current_rsi is not None and prev_rsi is not None and atr is not None:
+                    if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD:
+                        rsi_signal = "BUY"
+                    elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
+                        rsi_signal = "SELL"
                 if rsi_signal and ema_signal and atr is not None:
                     if rsi_signal == "BUY" and cur_fast > cur_slow:
                         combined_signal = "BUY"
                     elif rsi_signal == "SELL" and cur_fast < cur_slow:
                         combined_signal = "SELL"
+                    else:
+                        combined_signal = None
                     if combined_signal:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
                             if (combined_signal == "BUY" and price <= vwap) or (combined_signal == "SELL" and price >= vwap):
@@ -638,6 +625,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                                 rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
+                # --- FAST EMA сигнал ---
                 fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, tf, EMA_FAST_FAST, EMA_SLOW_FAST)
                 if fast_cross and atr is not None:
                     higher_tf = "1h" if tf == "15m" else "15m" if tf != "1h" else None
@@ -864,7 +852,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Бот запущен!\n"
         f"Отслеживаю: GOLD ({gold_source}), BTC, ETH, SOL.\n"
         "Таймфреймы: GOLD (5м, 15м), крипта (15м, 1ч).\n"
-        "⭐ FAST EMA | ⭐⭐ RSI/EMA | ⭐⭐⭐ Combined\n"
+        "⭐ FAST EMA | ⭐⭐ EMA | ⭐⭐⭐ Combined (RSI+EMA)\n"
         "📰 Новости каждый час. Утренний обзор в 10:00 МСК.\n"
         f"📢 Отправка в канал: {status_msg}\n\n"
         "Команды:\n"
@@ -975,7 +963,6 @@ async def ai_command(update, context):
 # ---------- Запуск ----------
 async def post_init(app):
     await start_scheduler(app)
-    # Отправляем утренний обзор при старте, если сейчас от 6 до 12 МСК
     now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
     if 6 <= now_msk.hour <= 12:
         try:
