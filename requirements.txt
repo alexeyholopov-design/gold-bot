@@ -4,5 +4,3 @@ Flask
 apscheduler
 requests
 feedparser
-investpy
-setuptools
