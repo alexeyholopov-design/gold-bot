@@ -224,10 +224,10 @@ async def ask_gigachat(prompt):
 # ---------- Новости ----------
 def fetch_news(asset):
     rss_urls = {
-        "GOLD": "https://www.kitco.com/rss/",
-        "BTC": "https://cointelegraph.com/rss",
-        "ETH": "https://cointelegraph.com/rss",
-        "SOL": "https://cointelegraph.com/rss",
+        "GOLD": "https://www.investing.com/rss/news_285.rss",
+        "BTC":  "https://www.cryptopanic.com/news/rss/",
+        "ETH":  "https://www.cryptopanic.com/news/rss/",
+        "SOL":  "https://www.cryptopanic.com/news/rss/",
     }
     url = rss_urls.get(asset)
     if not url:
