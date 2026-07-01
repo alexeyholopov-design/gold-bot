@@ -9,9 +9,6 @@ from collections import defaultdict
 import urllib3
 import logging
 
-# ---------- ДОБАВЛЕН investpy ----------
-import investpy
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------- Логирование ----------
@@ -100,7 +97,7 @@ def safe_format(value, format_spec=":.2f"):
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
 
-# ---------- Bybit TradFi (неактивно) ----------
+# ---------- Bybit TradFi ----------
 def bybit_sign_request(params):
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
@@ -207,17 +204,7 @@ async def ask_gigachat(prompt):
 
 # ---------- НОВОСТИ (мульти-источники) ----------
 def fetch_news(asset):
-    """
-    Получает новостные заголовки для актива.
-    Для GOLD используется цепочка источников:
-      1. Kitco RSS (основной)
-      2. Google News RSS (поиск "gold price")
-      3. Парсинг заголовков с Kitco.com (резерв)
-    Для криптовалют — Cointelegraph RSS.
-    Возвращает строку с текстом новостей или "".
-    """
     if asset == "GOLD":
-        # 1. Пробуем основной Kitco RSS
         try:
             feed = feedparser.parse("https://www.kitco.com/rss/")
             entries = feed.entries[:5]
@@ -228,7 +215,6 @@ def fetch_news(asset):
         except Exception as e:
             logger.warning(f"⚠️ Kitco RSS ошибка: {e}")
 
-        # 2. Запасной источник — Google News по запросу "gold price"
         try:
             google_url = "https://news.google.com/rss/search?q=gold+price&hl=en-US&gl=US&ceid=US:en"
             feed = feedparser.parse(google_url)
@@ -240,7 +226,6 @@ def fetch_news(asset):
         except Exception as e:
             logger.warning(f"⚠️ Google News RSS ошибка: {e}")
 
-        # 3. Парсинг заголовков с главной страницы Kitco (HTML)
         try:
             resp = requests.get("https://www.kitco.com", timeout=10)
             from bs4 import BeautifulSoup
@@ -779,87 +764,90 @@ async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEND_TO_CHANNEL = False
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
-# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM ----------
+# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (без investpy) ----------
+
+INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
+INVESTING_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "X-Requested-With": "XMLHttpRequest",
+    "Content-Type": "application/x-www-form-urlencoded",
+}
 
 def get_investing_high_impact_events():
     """
-    Возвращает строку с сегодняшними событиями важности '3 звезды' из экономического календаря Investing.com.
-    Время в МСК (часовой пояс GMT+3).
+    Возвращает строку с сегодняшними событиями важности '3 звезды' из Investing.com.
+    Время событий — МСК (UTC+3). Использует прямой API.
     """
     try:
-        today = get_moscow_time().strftime("%d/%m/%Y")
-        events = investpy.economic_calendar(
-            time_zone='GMT +3:00',
-            from_date=today,
-            to_date=today
-        )
-        if events is None or events.empty:
-            return None
-
-        high_events = events[events['importance'] == 'high']
-        if high_events.empty:
+        today_str = get_moscow_time().strftime("%Y-%m-%d")
+        payload = {
+            "dateFrom": today_str,
+            "dateTo": today_str,
+            "importance[]": "3",
+            "timeZone": "3",
+            "currentTab": "custom",
+        }
+        resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        events = data.get("data", [])
+        if not events:
             return None
 
         lines = []
-        for _, event in high_events.iterrows():
-            time_str = event.get('time', '?')
-            currency = event.get('currency', '')
-            name = event.get('event', '')
-            forecast = event.get('forecast', '')
-            previous = event.get('previous', '')
-            actual = event.get('actual', '')
+        for event in events:
+            time_str = event.get("time", "?")
+            currency = event.get("currency", "")
+            name = event.get("event", "")
+            forecast = event.get("forecast", "")
+            previous = event.get("previous", "")
             line = f"🕒 {time_str} | {currency} | {name}"
-            if forecast and str(forecast).lower() != 'none':
+            if forecast:
                 line += f" | Прогноз: {forecast}"
-            if previous and str(previous).lower() != 'none':
+            if previous:
                 line += f" | Предыдущее: {previous}"
             lines.append(line)
-        return "\n".join(lines)
+
+        return "\n".join(lines) if lines else None
+
     except Exception as e:
         logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
         return None
 
-# Множество для отслеживания уже отправленных событий
 notified_events = set()
 
 async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Проверяет, не появились ли фактические данные по сегодняшним событиям важности high.
-    Если появились и событие ещё не отправлено — отправляет в канал результат + AI-оценку.
-    """
     global notified_events
     try:
-        today = get_moscow_time().strftime("%d/%m/%Y")
-        events = investpy.economic_calendar(
-            time_zone='GMT +3:00',
-            from_date=today,
-            to_date=today
-        )
-        if events is None or events.empty:
-            return
+        today_str = get_moscow_time().strftime("%Y-%m-%d")
+        payload = {
+            "dateFrom": today_str,
+            "dateTo": today_str,
+            "importance[]": "3",
+            "timeZone": "3",
+            "currentTab": "custom",
+        }
+        resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        events = data.get("data", [])
+        for event in events:
+            actual = event.get("actual", "")
+            if not actual or actual.strip() == "":
+                continue
 
-        high_events = events[events['importance'] == 'high']
-        if high_events.empty:
-            return
+            time_str = event.get("time", "?")
+            currency = event.get("currency", "")
+            name = event.get("event", "")
+            forecast = event.get("forecast", "")
+            previous = event.get("previous", "")
 
-        for _, event in high_events.iterrows():
-            actual = event.get('actual', '')
-            if pd.isna(actual) or str(actual).strip() == '':
-                continue  # ещё нет фактического значения
-
-            time_str = event.get('time', '?')
-            currency = event.get('currency', '')
-            name = event.get('event', '')
-            forecast = event.get('forecast', '')
-            previous = event.get('previous', '')
-
-            event_id = f"{today}_{time_str}_{currency}_{name}"
+            event_id = f"{today_str}_{time_str}_{currency}_{name}"
             if event_id in notified_events:
                 continue
 
             notified_events.add(event_id)
 
-            # Формируем сообщение
             msg_lines = [
                 "📅 **Результат важного события (Investing.com ★★★)**",
                 f"🕒 {time_str} МСК",
@@ -869,7 +857,6 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
                 f"✅ Факт: {actual}"
             ]
 
-            # AI-оценка влияния на золото и криптовалюты
             if GIGACHAT_AUTH_KEY:
                 prompt = (
                     f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
@@ -892,7 +879,7 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
 
-# ---------- Утренний обзор (с добавлением Investing.com) ----------
+# ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
     logger.info("📊 Формирование утреннего обзора...")
     if context is None and telegram_app:
@@ -914,7 +901,6 @@ async def send_morning_report(context=None):
         sentiment = news_sentiment.get(asset_name, "Нет данных")
         msg += f"**{asset_name}**: {sentiment}\n"
 
-    # Добавляем важные события Investing.com
     investing_events = get_investing_high_impact_events()
     if investing_events:
         msg += "\n📅 **Важные события (Investing.com ★★★):**\n"
@@ -944,8 +930,7 @@ async def start_scheduler(app):
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=3600, first=30)
-    # Новая задача: проверка результатов Investing.com каждые 10 минут
-    job_queue.run_repeating(check_investing_events_and_notify, interval=400, first=120)
+    job_queue.run_repeating(check_investing_events_and_notify, interval=600, first=120)
     logger.info("📅 Планировщик запущен")
 
 async def daily_report_job(context):
