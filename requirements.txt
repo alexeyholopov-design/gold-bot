@@ -4,3 +4,7 @@ Flask
 apscheduler
 requests
 feedparser
+pandas
+numpy
+urllib3
+beautifulsoup4
