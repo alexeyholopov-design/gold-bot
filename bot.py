@@ -204,20 +204,76 @@ async def ask_gigachat(prompt):
 
 # ---------- Новости (исправлены RSS для крипты) ----------
 def fetch_news(asset):
+    """
+    Получает новостные заголовки для актива.
+    Для GOLD используется цепочка источников:
+      1. Kitco RSS (основной)
+      2. Google News RSS (поиск "gold price")
+      3. Парсинг заголовков с Kitco.com (резерв)
+    Для криптовалют — Cointelegraph RSS.
+    Возвращает строку с текстом новостей или "".
+    """
+    # --- Источники для золота ---
+    if asset == "GOLD":
+        # 1. Пробуем основной Kitco RSS
+        try:
+            feed = feedparser.parse("https://www.kitco.com/rss/")
+            entries = feed.entries[:5]
+            titles = [entry.title for entry in entries if hasattr(entry, 'title')]
+            if titles:
+                logger.info(f"📰 GOLD: Kitco RSS — {len(titles)} заголовков")
+                return " ".join(titles)
+        except Exception as e:
+            logger.warning(f"⚠️ Kitco RSS ошибка: {e}")
+
+        # 2. Запасной источник — Google News по запросу "gold price"
+        try:
+            google_url = "https://news.google.com/rss/search?q=gold+price&hl=en-US&gl=US&ceid=US:en"
+            feed = feedparser.parse(google_url)
+            entries = feed.entries[:5]
+            titles = [entry.title for entry in entries if hasattr(entry, 'title')]
+            if titles:
+                logger.info(f"📰 GOLD: Google News — {len(titles)} заголовков")
+                return " ".join(titles)
+        except Exception as e:
+            logger.warning(f"⚠️ Google News RSS ошибка: {e}")
+
+        # 3. Парсинг заголовков с главной страницы Kitco (HTML)
+        try:
+            resp = requests.get("https://www.kitco.com", timeout=10)
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            # Ищем заголовки новостей (проверьте селектор на актуальность)
+            items = soup.select('a.article-title, h3.title, .news-title a')
+            titles = [el.get_text(strip=True) for el in items[:5]]
+            if titles:
+                logger.info(f"📰 GOLD: Kitco HTML парсинг — {len(titles)} заголовков")
+                return " ".join(titles)
+        except Exception as e:
+            logger.warning(f"⚠️ Kitco парсинг ошибка: {e}")
+
+        logger.warning("⚠️ Все источники для GOLD вернули пустой результат")
+        return ""
+
+    # --- Источники для криптовалют (без изменений) ---
     rss_urls = {
-        "GOLD": "https://www.kitco.com/rss/",
-        "BTC":  "https://cointelegraph.com/rss/tag/bitcoin",
-        "ETH":  "https://cointelegraph.com/rss/tag/ethereum",
-        "SOL":  "https://cointelegraph.com/rss/tag/solana",
+        "BTC": "https://cointelegraph.com/rss/tag/bitcoin",
+        "ETH": "https://cointelegraph.com/rss/tag/ethereum",
+        "SOL": "https://cointelegraph.com/rss/tag/solana",
     }
     url = rss_urls.get(asset)
-    if not url: return ""
+    if not url:
+        return ""
     try:
         feed = feedparser.parse(url)
         entries = feed.entries[:5]
         titles = [entry.title for entry in entries if hasattr(entry, 'title')]
-        return " ".join(titles) if titles else ""
-    except: return ""
+        if titles:
+            logger.info(f"📰 {asset}: Cointelegraph — {len(titles)} заголовков")
+            return " ".join(titles)
+    except Exception as e:
+        logger.warning(f"⚠️ {asset} RSS ошибка: {e}")
+    return ""
 
 async def analyze_news_with_gigachat(asset, news_text):
     if not news_text: return "Новостей нет."
