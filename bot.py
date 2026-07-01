@@ -9,6 +9,9 @@ from collections import defaultdict
 import urllib3
 import logging
 
+# ---------- ДОБАВЛЕН investpy ----------
+import investpy
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------- Логирование ----------
@@ -202,7 +205,7 @@ async def ask_gigachat(prompt):
         logger.error(f"❌ GigaChat error: {e}")
     return None
 
-# ---------- Новости (исправлены RSS для крипты) ----------
+# ---------- НОВОСТИ (мульти-источники) ----------
 def fetch_news(asset):
     """
     Получает новостные заголовки для актива.
@@ -213,7 +216,6 @@ def fetch_news(asset):
     Для криптовалют — Cointelegraph RSS.
     Возвращает строку с текстом новостей или "".
     """
-    # --- Источники для золота ---
     if asset == "GOLD":
         # 1. Пробуем основной Kitco RSS
         try:
@@ -243,7 +245,6 @@ def fetch_news(asset):
             resp = requests.get("https://www.kitco.com", timeout=10)
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(resp.text, 'html.parser')
-            # Ищем заголовки новостей (проверьте селектор на актуальность)
             items = soup.select('a.article-title, h3.title, .news-title a')
             titles = [el.get_text(strip=True) for el in items[:5]]
             if titles:
@@ -255,7 +256,6 @@ def fetch_news(asset):
         logger.warning("⚠️ Все источники для GOLD вернули пустой результат")
         return ""
 
-    # --- Источники для криптовалют (без изменений) ---
     rss_urls = {
         "BTC": "https://cointelegraph.com/rss/tag/bitcoin",
         "ETH": "https://cointelegraph.com/rss/tag/ethereum",
@@ -447,7 +447,7 @@ def add_active_signal(asset_name, tf, signal_dict):
     if tf not in active_signals[asset_name]: active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней (с закрытием при макс. TP или SL после БУ) ----------
+# ---------- Проверка уровней ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']: return
@@ -461,18 +461,17 @@ async def check_signal_levels(bot, signal_dict):
     minutes = (now - signal_dict['timestamp']).total_seconds() / 60
     tag = ASSETS[asset_name]['tag']
 
-    # Проверка SL
     if not signal_dict['sl_hit']:
         sl_hit = (is_buy and price <= levels['sl']) or (not is_buy and price >= levels['sl'])
         if sl_hit:
             signal_dict['sl_hit'] = True
-            if not signal_dict['tp1_hit']:   # чистый SL
+            if not signal_dict['tp1_hit']:
                 signal_dict['closed'] = True
                 msg = (f"{tag} ❌ Стоп-лосс сработал по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nSL: ${levels['sl']:.2f}\n"
                        f"⏱ Время сделки: {minutes:.1f} мин.")
                 await send_to_chat(FakeContext(bot), msg)
-            else:   # SL после безубытка – завершаем с уведомлением о безубытке
+            else:
                 signal_dict['closed'] = True
                 msg = (f"{tag} 🔒 Безубыток по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nСтоп: ${levels['sl']:.2f}\n"
@@ -482,24 +481,22 @@ async def check_signal_levels(bot, signal_dict):
             return
 
     if not signal_dict['sl_hit']:
-        # TP1
         if not signal_dict['tp1_hit']:
             tp1_hit = (is_buy and price >= levels['tp1']) or (not is_buy and price <= levels['tp1'])
             if tp1_hit:
                 signal_dict['tp1_hit'] = True
-                signal_dict['levels']['sl'] = levels['price']   # перенос стопа в безубыток
+                signal_dict['levels']['sl'] = levels['price']
                 msg = (f"{tag} ✅ TP1 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                        f"Вход: ${levels['price']:.2f}\nTP1: ${levels['tp1']:.2f}\n"
                        f"🔒 Стоп перенесён в безубыток\n⏱ Время сделки: {minutes:.1f} мин.")
                 await send_to_chat(FakeContext(bot), msg)
                 logger.info(f"✅ TP1 (безубыток) для {asset_name} {signal_dict['tf']}")
         else:
-            # TP2 и TP3
             if not signal_dict['tp2_hit']:
                 tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
                 if tp2_hit:
                     signal_dict['tp2_hit'] = True
-                    close_trade = signal_dict['type'] != 'fast_ema'   # для не-fast_ema закрываем на TP2
+                    close_trade = signal_dict['type'] != 'fast_ema'
                     if close_trade:
                         signal_dict['closed'] = True
                         close_msg = " (сделка завершена)"
@@ -514,7 +511,7 @@ async def check_signal_levels(bot, signal_dict):
                 tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
                 if tp3_hit:
                     signal_dict['tp3_hit'] = True
-                    signal_dict['closed'] = True   # TP3 всегда завершает сделку
+                    signal_dict['closed'] = True
                     msg = (f"{tag} ✅ TP3 достигнут по {asset_name} [{signal_dict['tf']}] ({signal_dict['type']})\n"
                            f"Вход: ${levels['price']:.2f}\nTP3: ${levels['tp3']:.2f} (сделка завершена)\n"
                            f"⏱ Время сделки: {minutes:.1f} мин.")
@@ -567,7 +564,7 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     if ai_analysis: msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
-# ---------- Основная логика (без отдельных RSI) ----------
+# ---------- Основная логика ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
@@ -612,7 +609,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                             ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                             volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-                # Combined (RSI + EMA)
+                # Combined
                 rsi_signal = None
                 if current_rsi is not None and prev_rsi is not None:
                     if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD: rsi_signal = "BUY"
@@ -782,7 +779,120 @@ async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEND_TO_CHANNEL = False
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
-# ---------- Утренний обзор ----------
+# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM ----------
+
+def get_investing_high_impact_events():
+    """
+    Возвращает строку с сегодняшними событиями важности '3 звезды' из экономического календаря Investing.com.
+    Время в МСК (часовой пояс GMT+3).
+    """
+    try:
+        today = get_moscow_time().strftime("%d/%m/%Y")
+        events = investpy.economic_calendar(
+            time_zone='GMT +3:00',
+            from_date=today,
+            to_date=today
+        )
+        if events is None or events.empty:
+            return None
+
+        high_events = events[events['importance'] == 'high']
+        if high_events.empty:
+            return None
+
+        lines = []
+        for _, event in high_events.iterrows():
+            time_str = event.get('time', '?')
+            currency = event.get('currency', '')
+            name = event.get('event', '')
+            forecast = event.get('forecast', '')
+            previous = event.get('previous', '')
+            actual = event.get('actual', '')
+            line = f"🕒 {time_str} | {currency} | {name}"
+            if forecast and str(forecast).lower() != 'none':
+                line += f" | Прогноз: {forecast}"
+            if previous and str(previous).lower() != 'none':
+                line += f" | Предыдущее: {previous}"
+            lines.append(line)
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
+        return None
+
+# Множество для отслеживания уже отправленных событий
+notified_events = set()
+
+async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Проверяет, не появились ли фактические данные по сегодняшним событиям важности high.
+    Если появились и событие ещё не отправлено — отправляет в канал результат + AI-оценку.
+    """
+    global notified_events
+    try:
+        today = get_moscow_time().strftime("%d/%m/%Y")
+        events = investpy.economic_calendar(
+            time_zone='GMT +3:00',
+            from_date=today,
+            to_date=today
+        )
+        if events is None or events.empty:
+            return
+
+        high_events = events[events['importance'] == 'high']
+        if high_events.empty:
+            return
+
+        for _, event in high_events.iterrows():
+            actual = event.get('actual', '')
+            if pd.isna(actual) or str(actual).strip() == '':
+                continue  # ещё нет фактического значения
+
+            time_str = event.get('time', '?')
+            currency = event.get('currency', '')
+            name = event.get('event', '')
+            forecast = event.get('forecast', '')
+            previous = event.get('previous', '')
+
+            event_id = f"{today}_{time_str}_{currency}_{name}"
+            if event_id in notified_events:
+                continue
+
+            notified_events.add(event_id)
+
+            # Формируем сообщение
+            msg_lines = [
+                "📅 **Результат важного события (Investing.com ★★★)**",
+                f"🕒 {time_str} МСК",
+                f"💱 {currency} | {name}",
+                f"📊 Прогноз: {forecast if forecast else '—'}",
+                f"📌 Предыдущее: {previous if previous else '—'}",
+                f"✅ Факт: {actual}"
+            ]
+
+            # AI-оценка влияния на золото и криптовалюты
+            if GIGACHAT_AUTH_KEY:
+                prompt = (
+                    f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
+                    f"Событие: {name}\n"
+                    f"Валюта: {currency}\n"
+                    f"Прогноз: {forecast}\n"
+                    f"Предыдущее: {previous}\n"
+                    f"Фактическое значение: {actual}\n\n"
+                    "Опиши кратко (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
+                    "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
+                )
+                impact = await ask_gigachat(prompt)
+                if impact:
+                    msg_lines.append(f"\n🧠 **Влияние на рынок:**\n{impact}")
+
+            full_msg = "\n".join(msg_lines)
+            logger.info(f"📢 Отправка результата события: {event_id}")
+            await send_to_chat(context, full_msg)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
+
+# ---------- Утренний обзор (с добавлением Investing.com) ----------
 async def send_morning_report(context=None):
     logger.info("📊 Формирование утреннего обзора...")
     if context is None and telegram_app:
@@ -803,6 +913,15 @@ async def send_morning_report(context=None):
     for asset_name in ASSETS:
         sentiment = news_sentiment.get(asset_name, "Нет данных")
         msg += f"**{asset_name}**: {sentiment}\n"
+
+    # Добавляем важные события Investing.com
+    investing_events = get_investing_high_impact_events()
+    if investing_events:
+        msg += "\n📅 **Важные события (Investing.com ★★★):**\n"
+        msg += investing_events + "\n"
+    else:
+        msg += "\n📅 Важных событий (Investing.com ★★★) на сегодня нет.\n"
+
     await send_to_chat(context, msg)
     logger.info("✅ Утренний обзор отправлен")
 
@@ -825,6 +944,8 @@ async def start_scheduler(app):
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=3600, first=30)
+    # Новая задача: проверка результатов Investing.com каждые 10 минут
+    job_queue.run_repeating(check_investing_events_and_notify, interval=400, first=120)
     logger.info("📅 Планировщик запущен")
 
 async def daily_report_job(context):
