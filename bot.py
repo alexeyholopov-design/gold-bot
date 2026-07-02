@@ -30,6 +30,7 @@ if not TOKEN:
 
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 SEND_TO_CHANNEL = True
+ENABLE_GOLD_1M = False   # по умолчанию 1m выключен
 
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
@@ -57,7 +58,7 @@ news_sentiment = {}
 telegram_app = None
 
 ASSET_TIMEFRAMES = {
-    "GOLD": ["5m", "15m"],
+    "GOLD": ["5m", "15m"],   # 1m добавляется отдельно по команде
     "BTC":  ["15m", "1h"],
     "ETH":  ["15m", "1h"],
     "SOL":  ["15m", "1h"],
@@ -81,6 +82,7 @@ LOOKBACK = 50
 EMA_FAST = 20; EMA_SLOW = 50; EMA_FAST_FAST = 3; EMA_SLOW_FAST = 10
 
 ATR_MULTIPLIERS = {
+    "1m":  {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0},
     "5m":  {"SL": 1.2, "TP1": 1.5, "TP2": 2.0, "TP3": 3.0},
     "15m": {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0},
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
@@ -632,6 +634,28 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                                 higher_trend=trend if higher_tf else None, context=context)
             except Exception as e:
                 logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
+
+        # === GOLD 1m FAST_EMA (включается командой) ===
+        if name == "GOLD" and ENABLE_GOLD_1M:
+            try:
+                fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
+                if fast_cross_1m:
+                    atr_1m = get_atr_value(symbol, "1m")
+                    if atr_1m is not None:
+                        trend_5m = get_trend_direction(symbol, "1m", "5m")
+                        if trend_5m is not None:
+                            if (fast_cross_1m == "BUY" and trend_5m != "UP") or (fast_cross_1m == "SELL" and trend_5m != "DOWN"):
+                                logger.info(f"ℹ️ GOLD 1m FAST_EMA {fast_cross_1m} пропущен: тренд 5m {trend_5m}")
+                                continue
+                        await handle_new_signal(
+                            "GOLD", "1m", "fast_ema", fast_cross_1m, price,
+                            cur_fast3=cur_fast3_1m, cur_slow10=cur_slow10_1m, atr=atr_1m,
+                            volume=None, avg_volume=None, vwap=None,
+                            higher_trend=trend_5m, context=context
+                        )
+            except Exception as e:
+                logger.error(f"❌ Ошибка в GOLD 1m: {e}")
+
     await check_all_active_signals(context.bot)
 
 # ---------- Отчёты ----------
@@ -764,8 +788,18 @@ async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SEND_TO_CHANNEL = False
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
-# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (без investpy) ----------
+# ---------- Команды GOLD 1m ----------
+async def gold_1m_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ENABLE_GOLD_1M
+    ENABLE_GOLD_1M = True
+    await update.message.reply_text("✅ GOLD 1m включён. Сигналы FAST_EMA по тренду 5m.")
 
+async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ENABLE_GOLD_1M
+    ENABLE_GOLD_1M = False
+    await update.message.reply_text("⏸️ GOLD 1m выключен.")
+
+# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (без investpy) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -776,7 +810,7 @@ INVESTING_HEADERS = {
 def get_investing_high_impact_events():
     """
     Возвращает строку с сегодняшними событиями важности '3 звезды' из Investing.com.
-    Время событий — МСК (UTC+3). Использует прямой API.
+    Время событий — МСК (UTC+3).
     """
     try:
         today_str = get_moscow_time().strftime("%Y-%m-%d")
@@ -792,6 +826,7 @@ def get_investing_high_impact_events():
         data = resp.json()
         events = data.get("data", [])
         if not events:
+            logger.info(f"📅 Investing.com: нет событий на {today_str}. Ответ API: {data}")
             return None
 
         lines = []
@@ -963,6 +998,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today – отчёт за сегодня\n"
         "/ai {актив} – AI-анализ\n"
         "/morning – утренний обзор\n"
+        "/gold_1m_on – включить GOLD 1m\n"
+        "/gold_1m_off – выключить GOLD 1m\n"
         "/channel_on – включить канал\n"
         "/channel_off – приостановить канал"
     )
@@ -1095,6 +1132,8 @@ def run_bot():
     app.add_handler(CommandHandler("today", today_report))
     app.add_handler(CommandHandler("ai", ai_command))
     app.add_handler(CommandHandler("morning", morning_command))
+    app.add_handler(CommandHandler("gold_1m_on", gold_1m_on))
+    app.add_handler(CommandHandler("gold_1m_off", gold_1m_off))
     app.add_handler(CommandHandler("channel_on", channel_on))
     app.add_handler(CommandHandler("channel_off", channel_off))
 
