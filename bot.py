@@ -266,7 +266,7 @@ def fetch_news(asset):
 async def analyze_news_with_gigachat(asset, news_text):
     if not news_text: return "Новостей нет."
     prompt = (f"Проанализируй новости по активу {asset}. Новости:\n{news_text}\n\n"
-              "Дай КРАТКУЮ оценку **на русском языке** (1-2 предложения): общее настроение, ключевое событие, влияние на цену в ближайшие часы.")
+              "Дай КРАТКУЮ оценку на русском языке (1-2 предложения): общее настроение, ключевое событие, влияние на цену в ближайшие часы.")
     return await ask_gigachat(prompt)
 
 async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
@@ -317,7 +317,7 @@ RSI (14): {rsi_str}
 {trend_text}
 Новостной фон (последние часы): {news_text}
 
-Ответь кратко, строго в формате:
+Ответь кратко, строго на русском языке, в формате:
 1. Оценка ситуации (одно предложение).
 2. Риск (одно предложение).
 3. Рекомендация: BUY/SELL/HOLD с пояснением.
@@ -801,7 +801,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (время в 24-часовом формате) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (время +12 часов) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -809,10 +809,10 @@ INVESTING_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
 }
 
-def _convert_to_24h(time_str: str) -> str:
+def _convert_to_24h_and_shift(time_str: str) -> str:
     """
     Преобразует время из формата "HH:MM AM/PM" или "HH:MM" в 24-часовой "HH:MM".
-    Если строка уже в 24-часовом формате, возвращает её без изменений.
+    Затем добавляет 12 часов (сдвиг часового пояса Investing).
     """
     if not time_str:
         return time_str
@@ -827,9 +827,21 @@ def _convert_to_24h(time_str: str) -> str:
             hour += 12
         elif ampm == 'AM' and hour == 12:
             hour = 0
-        return f"{hour:02d}:{minute}"
-    # Если AM/PM нет, считаем, что это 24-часовой формат, но убираем лишние пробелы
-    return time_str
+        hour24 = hour
+    else:
+        # Уже 24-часовой формат, парсим часы
+        parts = time_str.split(':')
+        try:
+            hour24 = int(parts[0])
+            minute = parts[1]
+        except (ValueError, IndexError):
+            return time_str
+        else:
+            minute = parts[1]
+
+    # Добавляем 12 часов
+    shifted_hour = (hour24 + 12) % 24
+    return f"{shifted_hour:02d}:{minute}"
 
 def parse_investing_html(html_string):
     soup = BeautifulSoup(html_string, 'html.parser')
@@ -840,8 +852,8 @@ def parse_investing_html(html_string):
             if len(cols) < 8:
                 continue
             raw_time = cols[0].get_text(strip=True)
-            logger.info(f"🕒 Investing сырое время: '{raw_time}' -> {_convert_to_24h(raw_time)}")
-            time_24 = _convert_to_24h(raw_time)
+            time_24 = _convert_to_24h_and_shift(raw_time)
+            logger.info(f"🕒 Investing сырое время: '{raw_time}' -> {time_24}")
             currency = cols[1].get_text(strip=True)
             # название события — обычно в третьем столбце (иногда во втором)
             name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
@@ -947,7 +959,7 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
                     f"Прогноз: {ev['forecast']}\n"
                     f"Предыдущее: {ev['previous']}\n"
                     f"Фактическое значение: {actual}\n\n"
-                    "Опиши кратко (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
+                    "Опиши кратко на русском языке (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
                     "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
                 )
                 impact = await ask_gigachat(prompt)
