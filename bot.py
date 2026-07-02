@@ -55,7 +55,8 @@ signal_history = []
 active_signals = {}
 gigachat_token = None
 gigachat_token_expires = 0
-news_sentiment = {}
+# Инициализируем сразу, чтобы обзор не показывал "Нет данных" до первой загрузки
+news_sentiment = {asset: "Загрузка..." for asset in ["GOLD", "BTC", "ETH", "SOL"]}
 telegram_app = None
 
 ASSET_TIMEFRAMES = {
@@ -275,13 +276,13 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
             news_text = fetch_news(asset)
             if news_text:
                 analysis = await analyze_news_with_gigachat(asset, news_text)
-                news_sentiment[asset] = analysis
-                logger.info(f"📰 {asset}: {analysis[:100]}...")
+                news_sentiment[asset] = analysis if analysis else "Анализ недоступен"
+                logger.info(f"📰 {asset}: {news_sentiment[asset][:100]}...")
             else:
                 news_sentiment[asset] = "Новостей не найдено."
         logger.info("✅ Новостной фон обновлён")
     except Exception as e:
-        logger.error(f"❌ Ошибка в update_news_sentiment: {e}")
+        logger.error(f"❌ Ошибка в update_news_sentiment: {e}", exc_info=True)
 
 # ---------- AI анализ сигналов ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
@@ -799,7 +800,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (HTML) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (исправлено) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -808,7 +809,7 @@ INVESTING_HEADERS = {
 }
 
 def parse_investing_html(html_string):
-    """Парсит HTML-таблицу событий Investing.com и возвращает список словарей."""
+    """Парсит HTML-таблицу событий Investing.com. Возвращает список словарей."""
     soup = BeautifulSoup(html_string, 'html.parser')
     events = []
     for row in soup.find_all('tr', id=lambda x: x and x.startswith('eventRowId_')):
@@ -816,13 +817,19 @@ def parse_investing_html(html_string):
             cols = row.find_all('td')
             if len(cols) < 8:
                 continue
+            # Структура: time, currency, event_name, actual, forecast, previous, ...
+            # Но после time/currency может быть пустой столбец, смотрим реальный пример
             time_str = cols[0].get_text(strip=True)
             currency = cols[1].get_text(strip=True)
-            name = cols[2].get_text(strip=True)
-            actual = cols[3].get_text(strip=True)
-            forecast = cols[4].get_text(strip=True)
-            previous = cols[5].get_text(strip=True)
-            # иногда actual пустое, но событие ещё не вышло
+            # Название события ищем в cols[3] (cols[2] часто пустой или importance)
+            name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
+            # Если cols[2] непустой и cols[3] пустой, берём cols[2]
+            if not name:
+                name = cols[2].get_text(strip=True)
+            actual = cols[4].get_text(strip=True) if len(cols) > 4 else ''
+            forecast = cols[5].get_text(strip=True) if len(cols) > 5 else ''
+            previous = cols[6].get_text(strip=True) if len(cols) > 6 else ''
+
             events.append({
                 'time': time_str,
                 'currency': currency,
@@ -850,17 +857,9 @@ def get_investing_high_impact_events():
             logger.error(f"📅 Investing.com статус: {resp.status_code}")
             return None
         data = resp.json()
-        html_str = None
-        if isinstance(data, dict) and 'data' in data:
-            html_str = data['data']
-        elif isinstance(data, str):
-            html_str = data
-        else:
-            logger.warning(f"📅 Неожиданный формат ответа: {type(data)}")
-            return None
-
+        html_str = data.get('data') if isinstance(data, dict) else data
         if not html_str or not isinstance(html_str, str):
-            logger.info(f"📅 Нет HTML данных от Investing.com")
+            logger.info("📅 Investing.com: пустой HTML")
             return None
 
         events = parse_investing_html(html_str)
@@ -897,17 +896,12 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
         resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        html_str = None
-        if isinstance(data, dict) and 'data' in data:
-            html_str = data['data']
-        elif isinstance(data, str):
-            html_str = data
-        else:
+        html_str = data.get('data') if isinstance(data, dict) else data
+        if not html_str:
             return
-
         events = parse_investing_html(html_str)
         for ev in events:
-            actual = ev['actual']
+            actual = ev.get('actual')
             if not actual:
                 continue
             event_id = f"{today_str}_{ev['time']}_{ev['currency']}_{ev['event']}"
