@@ -801,7 +801,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (время +12 часов) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (сдвиг +13 часов) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -812,7 +812,7 @@ INVESTING_HEADERS = {
 def _convert_to_24h_and_shift(time_str: str) -> str:
     """
     Преобразует время из формата "HH:MM AM/PM" или "HH:MM" в 24-часовой "HH:MM".
-    Затем добавляет 12 часов (сдвиг часового пояса Investing).
+    Затем добавляет 13 часов (сдвиг часового пояса для МСК).
     """
     if not time_str:
         return time_str
@@ -839,8 +839,8 @@ def _convert_to_24h_and_shift(time_str: str) -> str:
         else:
             minute = parts[1]
 
-    # Добавляем 12 часов
-    shifted_hour = (hour24 + 12) % 24
+    # Добавляем 13 часов
+    shifted_hour = (hour24 + 13) % 24
     return f"{shifted_hour:02d}:{minute}"
 
 def parse_investing_html(html_string):
