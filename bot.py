@@ -265,7 +265,8 @@ def fetch_news(asset):
 
 async def analyze_news_with_gigachat(asset, news_text):
     if not news_text: return "Новостей нет."
-    prompt = f"Проанализируй новости по активу {asset}. Новости:\n{news_text}\n\nДай КРАТКУЮ оценку в 1-2 предложения: общее настроение, ключевое событие, влияние на цену в ближайшие часы."
+    prompt = (f"Проанализируй новости по активу {asset}. Новости:\n{news_text}\n\n"
+              "Дай КРАТКУЮ оценку **на русском языке** (1-2 предложения): общее настроение, ключевое событие, влияние на цену в ближайшие часы.")
     return await ask_gigachat(prompt)
 
 async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
@@ -839,6 +840,7 @@ def parse_investing_html(html_string):
             if len(cols) < 8:
                 continue
             raw_time = cols[0].get_text(strip=True)
+            logger.info(f"🕒 Investing сырое время: '{raw_time}' -> {_convert_to_24h(raw_time)}")
             time_24 = _convert_to_24h(raw_time)
             currency = cols[1].get_text(strip=True)
             # название события — обычно в третьем столбце (иногда во втором)
