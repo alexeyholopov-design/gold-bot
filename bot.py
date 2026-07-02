@@ -800,7 +800,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (исправлено время) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (время в 24-часовом формате) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
