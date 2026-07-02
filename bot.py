@@ -799,7 +799,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (без investpy) ----------
+# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (исправленные) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -824,13 +824,21 @@ def get_investing_high_impact_events():
         resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        events = data.get("data", [])
+        if isinstance(data, dict):
+            events = data.get("data", [])
+        elif isinstance(data, list):
+            events = data
+        else:
+            logger.warning(f"📅 Investing.com: неожиданный формат ответа: {type(data)}")
+            return None
         if not events:
-            logger.info(f"📅 Investing.com: нет событий на {today_str}. Ответ API: {data}")
+            logger.info(f"📅 Investing.com: нет событий на {today_str}. Ответ: {str(data)[:200]}")
             return None
 
         lines = []
         for event in events:
+            if not isinstance(event, dict):
+                continue
             time_str = event.get("time", "?")
             currency = event.get("currency", "")
             name = event.get("event", "")
@@ -847,6 +855,8 @@ def get_investing_high_impact_events():
 
     except Exception as e:
         logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
+        if 'resp' in locals():
+            logger.error(f"📅 Investing.com ответ: {resp.text[:300]}")
         return None
 
 notified_events = set()
@@ -865,8 +875,17 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
         resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        events = data.get("data", [])
+        if isinstance(data, dict):
+            events = data.get("data", [])
+        elif isinstance(data, list):
+            events = data
+        else:
+            logger.warning(f"📅 check_investing: неожиданный формат: {type(data)}")
+            return
+
         for event in events:
+            if not isinstance(event, dict):
+                continue
             actual = event.get("actual", "")
             if not actual or actual.strip() == "":
                 continue
@@ -913,6 +932,8 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
+        if 'resp' in locals():
+            logger.error(f"📅 check_investing ответ: {resp.text[:300]}")
 
 # ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
