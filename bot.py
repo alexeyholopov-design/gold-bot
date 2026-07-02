@@ -799,7 +799,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (исправленные) ----------
+# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (с усиленным логированием) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -822,8 +822,13 @@ def get_investing_high_impact_events():
             "currentTab": "custom",
         }
         resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
-        resp.raise_for_status()
+        if not resp.ok:
+            logger.error(f"📅 Investing.com статус: {resp.status_code}. Ответ: {resp.text[:300]}")
+            return None
+
         data = resp.json()
+        # Усиленное логирование
+        logger.info(f"📅 Investing.com ответ (первые 300 символов): {str(data)[:300]}")
         if isinstance(data, dict):
             events = data.get("data", [])
         elif isinstance(data, list):
@@ -831,8 +836,9 @@ def get_investing_high_impact_events():
         else:
             logger.warning(f"📅 Investing.com: неожиданный формат ответа: {type(data)}")
             return None
+
         if not events:
-            logger.info(f"📅 Investing.com: нет событий на {today_str}. Ответ: {str(data)[:200]}")
+            logger.info(f"📅 Investing.com: нет событий на {today_str}. Полный ответ: {str(data)[:500]}")
             return None
 
         lines = []
@@ -856,7 +862,7 @@ def get_investing_high_impact_events():
     except Exception as e:
         logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
         if 'resp' in locals():
-            logger.error(f"📅 Investing.com ответ: {resp.text[:300]}")
+            logger.error(f"📅 Investing.com ответ (ошибка): {resp.text[:300]}")
         return None
 
 notified_events = set()
