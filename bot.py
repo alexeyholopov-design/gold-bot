@@ -9,6 +9,7 @@ from collections import defaultdict
 import urllib3
 import logging
 from bs4 import BeautifulSoup
+import re
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -55,7 +56,6 @@ signal_history = []
 active_signals = {}
 gigachat_token = None
 gigachat_token_expires = 0
-# Инициализируем сразу, чтобы обзор не показывал "Нет данных" до первой загрузки
 news_sentiment = {asset: "Загрузка..." for asset in ["GOLD", "BTC", "ETH", "SOL"]}
 telegram_app = None
 
@@ -800,7 +800,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (исправлено) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (исправлено время) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -808,8 +808,29 @@ INVESTING_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
 }
 
+def _convert_to_24h(time_str: str) -> str:
+    """
+    Преобразует время из формата "HH:MM AM/PM" или "HH:MM" в 24-часовой "HH:MM".
+    Если строка уже в 24-часовом формате, возвращает её без изменений.
+    """
+    if not time_str:
+        return time_str
+    time_str = time_str.strip()
+    # Ищем AM/PM
+    match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_str, re.IGNORECASE)
+    if match:
+        hour = int(match.group(1))
+        minute = match.group(2)
+        ampm = match.group(3).upper()
+        if ampm == 'PM' and hour != 12:
+            hour += 12
+        elif ampm == 'AM' and hour == 12:
+            hour = 0
+        return f"{hour:02d}:{minute}"
+    # Если AM/PM нет, считаем, что это 24-часовой формат, но убираем лишние пробелы
+    return time_str
+
 def parse_investing_html(html_string):
-    """Парсит HTML-таблицу событий Investing.com. Возвращает список словарей."""
     soup = BeautifulSoup(html_string, 'html.parser')
     events = []
     for row in soup.find_all('tr', id=lambda x: x and x.startswith('eventRowId_')):
@@ -817,13 +838,11 @@ def parse_investing_html(html_string):
             cols = row.find_all('td')
             if len(cols) < 8:
                 continue
-            # Структура: time, currency, event_name, actual, forecast, previous, ...
-            # Но после time/currency может быть пустой столбец, смотрим реальный пример
-            time_str = cols[0].get_text(strip=True)
+            raw_time = cols[0].get_text(strip=True)
+            time_24 = _convert_to_24h(raw_time)
             currency = cols[1].get_text(strip=True)
-            # Название события ищем в cols[3] (cols[2] часто пустой или importance)
+            # название события — обычно в третьем столбце (иногда во втором)
             name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
-            # Если cols[2] непустой и cols[3] пустой, берём cols[2]
             if not name:
                 name = cols[2].get_text(strip=True)
             actual = cols[4].get_text(strip=True) if len(cols) > 4 else ''
@@ -831,7 +850,7 @@ def parse_investing_html(html_string):
             previous = cols[6].get_text(strip=True) if len(cols) > 6 else ''
 
             events.append({
-                'time': time_str,
+                'time': time_24,
                 'currency': currency,
                 'event': name,
                 'actual': actual if actual != '' else None,
