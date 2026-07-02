@@ -8,6 +8,7 @@ from datetime import time as dt_time, datetime, timedelta, timezone
 from collections import defaultdict
 import urllib3
 import logging
+from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -30,7 +31,7 @@ if not TOKEN:
 
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 SEND_TO_CHANNEL = True
-ENABLE_GOLD_1M = False   # по умолчанию 1m выключен
+ENABLE_GOLD_1M = False
 
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
@@ -58,7 +59,7 @@ news_sentiment = {}
 telegram_app = None
 
 ASSET_TIMEFRAMES = {
-    "GOLD": ["5m", "15m"],   # 1m добавляется отдельно по команде
+    "GOLD": ["5m", "15m"],
     "BTC":  ["15m", "1h"],
     "ETH":  ["15m", "1h"],
     "SOL":  ["15m", "1h"],
@@ -204,7 +205,7 @@ async def ask_gigachat(prompt):
         logger.error(f"❌ GigaChat error: {e}")
     return None
 
-# ---------- НОВОСТИ (мульти-источники) ----------
+# ---------- НОВОСТИ ----------
 def fetch_news(asset):
     if asset == "GOLD":
         try:
@@ -230,7 +231,6 @@ def fetch_news(asset):
 
         try:
             resp = requests.get("https://www.kitco.com", timeout=10)
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(resp.text, 'html.parser')
             items = soup.select('a.article-title, h3.title, .news-title a')
             titles = [el.get_text(strip=True) for el in items[:5]]
@@ -635,7 +635,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
 
-        # === GOLD 1m FAST_EMA (включается командой) ===
+        # === GOLD 1m FAST_EMA ===
         if name == "GOLD" and ENABLE_GOLD_1M:
             try:
                 fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
@@ -799,7 +799,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ INVESTING.COM (с усиленным логированием) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (HTML) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -807,11 +807,35 @@ INVESTING_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
 }
 
+def parse_investing_html(html_string):
+    """Парсит HTML-таблицу событий Investing.com и возвращает список словарей."""
+    soup = BeautifulSoup(html_string, 'html.parser')
+    events = []
+    for row in soup.find_all('tr', id=lambda x: x and x.startswith('eventRowId_')):
+        try:
+            cols = row.find_all('td')
+            if len(cols) < 8:
+                continue
+            time_str = cols[0].get_text(strip=True)
+            currency = cols[1].get_text(strip=True)
+            name = cols[2].get_text(strip=True)
+            actual = cols[3].get_text(strip=True)
+            forecast = cols[4].get_text(strip=True)
+            previous = cols[5].get_text(strip=True)
+            # иногда actual пустое, но событие ещё не вышло
+            events.append({
+                'time': time_str,
+                'currency': currency,
+                'event': name,
+                'actual': actual if actual != '' else None,
+                'forecast': forecast,
+                'previous': previous
+            })
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка парсинга строки Investing: {e}")
+    return events
+
 def get_investing_high_impact_events():
-    """
-    Возвращает строку с сегодняшними событиями важности '3 звезды' из Investing.com.
-    Время событий — МСК (UTC+3).
-    """
     try:
         today_str = get_moscow_time().strftime("%Y-%m-%d")
         payload = {
@@ -823,46 +847,38 @@ def get_investing_high_impact_events():
         }
         resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         if not resp.ok:
-            logger.error(f"📅 Investing.com статус: {resp.status_code}. Ответ: {resp.text[:300]}")
+            logger.error(f"📅 Investing.com статус: {resp.status_code}")
             return None
-
         data = resp.json()
-        # Усиленное логирование
-        logger.info(f"📅 Investing.com ответ (первые 300 символов): {str(data)[:300]}")
-        if isinstance(data, dict):
-            events = data.get("data", [])
-        elif isinstance(data, list):
-            events = data
+        html_str = None
+        if isinstance(data, dict) and 'data' in data:
+            html_str = data['data']
+        elif isinstance(data, str):
+            html_str = data
         else:
-            logger.warning(f"📅 Investing.com: неожиданный формат ответа: {type(data)}")
+            logger.warning(f"📅 Неожиданный формат ответа: {type(data)}")
             return None
 
+        if not html_str or not isinstance(html_str, str):
+            logger.info(f"📅 Нет HTML данных от Investing.com")
+            return None
+
+        events = parse_investing_html(html_str)
         if not events:
-            logger.info(f"📅 Investing.com: нет событий на {today_str}. Полный ответ: {str(data)[:500]}")
+            logger.info(f"📅 Investing.com: не найдено событий ★★★ на {today_str}")
             return None
 
         lines = []
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            time_str = event.get("time", "?")
-            currency = event.get("currency", "")
-            name = event.get("event", "")
-            forecast = event.get("forecast", "")
-            previous = event.get("previous", "")
-            line = f"🕒 {time_str} | {currency} | {name}"
-            if forecast:
-                line += f" | Прогноз: {forecast}"
-            if previous:
-                line += f" | Предыдущее: {previous}"
+        for ev in events:
+            line = f"🕒 {ev['time']} | {ev['currency']} | {ev['event']}"
+            if ev['forecast']:
+                line += f" | Прогноз: {ev['forecast']}"
+            if ev['previous']:
+                line += f" | Предыдущее: {ev['previous']}"
             lines.append(line)
-
-        return "\n".join(lines) if lines else None
-
+        return "\n".join(lines)
     except Exception as e:
         logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
-        if 'resp' in locals():
-            logger.error(f"📅 Investing.com ответ (ошибка): {resp.text[:300]}")
         return None
 
 notified_events = set()
@@ -881,49 +897,40 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
         resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        if isinstance(data, dict):
-            events = data.get("data", [])
-        elif isinstance(data, list):
-            events = data
+        html_str = None
+        if isinstance(data, dict) and 'data' in data:
+            html_str = data['data']
+        elif isinstance(data, str):
+            html_str = data
         else:
-            logger.warning(f"📅 check_investing: неожиданный формат: {type(data)}")
             return
 
-        for event in events:
-            if not isinstance(event, dict):
+        events = parse_investing_html(html_str)
+        for ev in events:
+            actual = ev['actual']
+            if not actual:
                 continue
-            actual = event.get("actual", "")
-            if not actual or actual.strip() == "":
-                continue
-
-            time_str = event.get("time", "?")
-            currency = event.get("currency", "")
-            name = event.get("event", "")
-            forecast = event.get("forecast", "")
-            previous = event.get("previous", "")
-
-            event_id = f"{today_str}_{time_str}_{currency}_{name}"
+            event_id = f"{today_str}_{ev['time']}_{ev['currency']}_{ev['event']}"
             if event_id in notified_events:
                 continue
-
             notified_events.add(event_id)
 
             msg_lines = [
                 "📅 **Результат важного события (Investing.com ★★★)**",
-                f"🕒 {time_str} МСК",
-                f"💱 {currency} | {name}",
-                f"📊 Прогноз: {forecast if forecast else '—'}",
-                f"📌 Предыдущее: {previous if previous else '—'}",
+                f"🕒 {ev['time']} МСК",
+                f"💱 {ev['currency']} | {ev['event']}",
+                f"📊 Прогноз: {ev['forecast'] if ev['forecast'] else '—'}",
+                f"📌 Предыдущее: {ev['previous'] if ev['previous'] else '—'}",
                 f"✅ Факт: {actual}"
             ]
 
             if GIGACHAT_AUTH_KEY:
                 prompt = (
                     f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
-                    f"Событие: {name}\n"
-                    f"Валюта: {currency}\n"
-                    f"Прогноз: {forecast}\n"
-                    f"Предыдущее: {previous}\n"
+                    f"Событие: {ev['event']}\n"
+                    f"Валюта: {ev['currency']}\n"
+                    f"Прогноз: {ev['forecast']}\n"
+                    f"Предыдущее: {ev['previous']}\n"
                     f"Фактическое значение: {actual}\n\n"
                     "Опиши кратко (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
                     "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
@@ -938,8 +945,6 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
-        if 'resp' in locals():
-            logger.error(f"📅 check_investing ответ: {resp.text[:300]}")
 
 # ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
