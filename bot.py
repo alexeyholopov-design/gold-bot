@@ -56,7 +56,7 @@ signal_history = []
 active_signals = {}
 gigachat_token = None
 gigachat_token_expires = 0
-news_sentiment = {asset: "Загрузка..." for asset in ["GOLD", "BTC", "ETH", "SOL"]}
+news_sentiment = {}
 telegram_app = None
 
 ASSET_TIMEFRAMES = {
@@ -269,7 +269,7 @@ async def analyze_news_with_gigachat(asset, news_text):
               "Дай КРАТКУЮ оценку на русском языке (1-2 предложения): общее настроение, ключевое событие, влияние на цену в ближайшие часы.")
     return await ask_gigachat(prompt)
 
-async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE):
+async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE = None):
     global news_sentiment
     try:
         logger.info("📰 Обновление новостного фона...")
@@ -973,7 +973,7 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
 
-# ---------- Утренний обзор ----------
+# ---------- Утренний обзор (с принудительным обновлением новостей) ----------
 async def send_morning_report(context=None):
     logger.info("📊 Формирование утреннего обзора...")
     if context is None and telegram_app:
@@ -981,6 +981,10 @@ async def send_morning_report(context=None):
     elif context is None:
         logger.error("❌ Нет контекста для отправки утреннего обзора")
         return
+
+    # --- Принудительно обновляем новостной фон перед отчётом ---
+    await update_news_sentiment(context)
+
     msg = "🌅 **Утренний обзор рынка**\n\n"
     for name, asset in ASSETS.items():
         symbol = asset['symbol']
