@@ -84,7 +84,7 @@ LOOKBACK = 50
 EMA_FAST = 20; EMA_SLOW = 50; EMA_FAST_FAST = 3; EMA_SLOW_FAST = 10
 
 ATR_MULTIPLIERS = {
-    "1m":  {"SL": 1.7, "TP1": 2.3, "TP2": 3.5, "TP3": 0},   # TP3 убран (0)
+    "1m":  {"SL": 1.7, "TP1": 2.3, "TP2": 3.5, "TP3": 0},
     "5m":  {"SL": 1.2, "TP1": 1.5, "TP2": 2.0, "TP3": 3.0},
     "15m": {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0},
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
@@ -398,6 +398,31 @@ def get_atr_value(symbol, interval):
     for i in range(14, len(tr)): atr[i] = (atr[i-1]*13 + tr[i])/14
     return atr[-1]
 
+def get_atr_stats(symbol, interval):
+    """Возвращает текущий ATR и средний ATR за последние 14 свечей (для динамических множителей)."""
+    df = get_klines(symbol, interval, limit=64)
+    if df is None or len(df) < 15: return None, None
+    high = df['High'].values; low = df['Low'].values; close = df['Close'].values
+    tr = np.maximum(high-low, np.maximum(abs(high-np.roll(close,1)), abs(low-np.roll(close,1))))
+    tr[0] = high[0]-low[0]
+    atr = np.zeros_like(tr); atr[:14] = np.mean(tr[:14])
+    for i in range(14, len(tr)): atr[i] = (atr[i-1]*13 + tr[i])/14
+    current_atr = atr[-1]
+    avg_atr14 = np.mean(atr[-14:]) if len(atr) >= 14 else current_atr
+    return current_atr, avg_atr14
+
+def get_ema_value(symbol, interval, period):
+    """Возвращает последнее значение EMA с указанным периодом."""
+    df = get_klines(symbol, interval, limit=LOOKBACK)
+    if df is None or len(df) < period: return None
+    close = df['Close'].values
+    ema = np.zeros_like(close)
+    alpha = 2/(period+1)
+    ema[0] = close[0]
+    for i in range(1, len(close)):
+        ema[i] = alpha*close[i] + (1-alpha)*ema[i-1]
+    return ema[-1]
+
 def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50):
     df = get_klines(symbol, interval=check_interval, limit=LOOKBACK)
     if df is None or len(df) < slow: return None
@@ -412,8 +437,8 @@ def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50)
     elif ema_fast[-1] < ema_slow[-1]: return "DOWN"
     return None
 
-def calculate_atr_levels(price, atr, signal_type, tf):
-    mult = ATR_MULTIPLIERS.get(tf, {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0})
+def calculate_atr_levels(price, atr, signal_type, tf, custom_mult=None):
+    mult = custom_mult if custom_mult else ATR_MULTIPLIERS.get(tf, {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0})
     if signal_type == "BUY":
         sl = price - atr * mult["SL"]
         tp1 = price + atr * mult["TP1"]
@@ -532,13 +557,15 @@ def has_open_signal(asset_name, tf, signal_type, direction):
 # ---------- Отправка нового сигнала ----------
 async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None, ema_fast=None, ema_slow=None,
                             cur_fast3=None, cur_slow10=None, atr=None, volume=None, avg_volume=None, vwap=None,
-                            higher_trend=None, context=None):
+                            higher_trend=None, context=None, simple_message=False, range_entry=None):
     if has_open_signal(asset_name, tf, signal_type, signal): return
-    levels = calculate_atr_levels(price, atr, signal, tf)
-    ai_analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi,
-                                        ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
-                                        volume=volume, avg_volume=avg_volume, vwap=vwap,
-                                        higher_trend=higher_trend)
+    levels = calculate_atr_levels(price, atr, signal, tf, custom_mult=None if not simple_message else None)  # будет пересчитано ниже для simple
+    ai_analysis = None
+    if not simple_message:
+        ai_analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi,
+                                            ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
+                                            volume=volume, avg_volume=avg_volume, vwap=vwap,
+                                            higher_trend=higher_trend)
     signal_dict = create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis)
     add_active_signal(asset_name, tf, signal_dict)
 
@@ -546,21 +573,32 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     direction = "покупку" if signal == "BUY" else "продажу"
     symbol = ASSETS[asset_name]['symbol']
     tag = ASSETS[asset_name]['tag']
-    msg = f"{tag} {stars} 📢 Сигнал на {direction} по {signal_type.upper()} для {asset_name} ({symbol}) [{tf}]\n"
-    msg += f"💰 Вход: ${levels['price']:.2f}\n"
-    msg += f"🛑 SL: ${levels['sl']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('SL', '?')})\n"
-    msg += f"🎯 TP1: ${levels['tp1']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP1', '?')})\n"
-    msg += f"🎯 TP2: ${levels['tp2']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP2', '?')})\n"
-    if levels.get('tp3', 0) != 0:
-        msg += f"🎯 TP3: ${levels['tp3']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
-    if rsi is not None: msg += f"📊 RSI: {float(rsi):.1f}\n"
-    if ema_fast is not None: msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
-    if cur_fast3 is not None: msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
-    if volume is not None: msg += f"📊 Объём: {float(volume):.0f} | Средний: {float(avg_volume):.0f} | VWAP: ${float(vwap):.2f}\n"
-    if ai_analysis: msg += f"\n🧠 {ai_analysis}"
+
+    if simple_message:
+        # Формат для GOLD 1m: диапазон, стоп, TP1, TP2
+        entry_from = range_entry['from']
+        entry_to = range_entry['to']
+        msg = f"{tag} ⭐ 📢 Входим в {direction.upper()} {asset_name} [{tf}]\n"
+        msg += f"🔹 Диапазон входа: ${entry_from:.2f} – ${entry_to:.2f}\n"
+        msg += f"🛑 Стоп-лосс: ${levels['sl']:.2f}\n"
+        msg += f"🎯 Тейк-профит 1: ${levels['tp1']:.2f}\n"
+        msg += f"🎯 Тейк-профит 2: ${levels['tp2']:.2f}"
+    else:
+        msg = f"{tag} {stars} 📢 Сигнал на {direction} по {signal_type.upper()} для {asset_name} ({symbol}) [{tf}]\n"
+        msg += f"💰 Вход: ${levels['price']:.2f}\n"
+        msg += f"🛑 SL: ${levels['sl']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('SL', '?')})\n"
+        msg += f"🎯 TP1: ${levels['tp1']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP1', '?')})\n"
+        msg += f"🎯 TP2: ${levels['tp2']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP2', '?')})\n"
+        if levels.get('tp3', 0) != 0:
+            msg += f"🎯 TP3: ${levels['tp3']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
+        if rsi is not None: msg += f"📊 RSI: {float(rsi):.1f}\n"
+        if ema_fast is not None: msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
+        if cur_fast3 is not None: msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
+        if volume is not None: msg += f"📊 Объём: {float(volume):.0f} | Средний: {float(avg_volume):.0f} | VWAP: ${float(vwap):.2f}\n"
+        if ai_analysis: msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
-# ---------- Основная логика (с блокировкой по времени и дням) ----------
+# ---------- Основная логика ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
@@ -568,7 +606,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
         return
 
     now_msk = get_moscow_time()
-    # Блокировка генерации новых сигналов после 23:00 МСК или в выходные
     if now_msk.hour >= 23 or now_msk.weekday() in (5, 6):
         logger.info("⏸️ Генерация сигналов приостановлена (время/выходной)")
     else:
@@ -650,23 +687,71 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
 
-            # === GOLD 1m FAST_EMA ===
+            # === GOLD 1m FAST_EMA (с фильтрами и новым форматом) ===
             if name == "GOLD" and ENABLE_GOLD_1M:
                 try:
                     fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
                     if fast_cross_1m:
                         atr_1m = get_atr_value(symbol, "1m")
-                        if atr_1m is not None:
-                            trend_5m = get_trend_direction(symbol, "1m", "5m")
-                            if trend_5m is not None:
-                                if (fast_cross_1m == "BUY" and trend_5m != "UP") or (fast_cross_1m == "SELL" and trend_5m != "DOWN"):
-                                    logger.info(f"ℹ️ GOLD 1m FAST_EMA {fast_cross_1m} пропущен: тренд 5m {trend_5m}")
-                                    continue
+                        if atr_1m is None: return
+                        # Фильтр минимальной волатильности (0.05% от цены)
+                        if atr_1m < price * 0.0005:
+                            logger.info(f"ℹ️ GOLD 1m FAST_EMA пропущен: низкая волатильность (ATR {atr_1m:.2f})")
+                            continue
+
+                        # Фильтр тренда по EMA(50) на 1m
+                        ema50_1m = get_ema_value(symbol, "1m", 50)
+                        if ema50_1m is not None:
+                            if fast_cross_1m == "BUY" and price <= ema50_1m:
+                                logger.info(f"ℹ️ GOLD 1m FAST_EMA BUY пропущен: цена ниже EMA50")
+                                continue
+                            if fast_cross_1m == "SELL" and price >= ema50_1m:
+                                logger.info(f"ℹ️ GOLD 1m FAST_EMA SELL пропущен: цена выше EMA50")
+                                continue
+
+                        # Свечной фильтр: закрытие выше/ниже предыдущего экстремума
+                        df_1m = get_klines(symbol, "1m", limit=5)
+                        if df_1m is not None and len(df_1m) >= 2:
+                            prev_high = df_1m['High'].iloc[-2]
+                            prev_low = df_1m['Low'].iloc[-2]
+                            current_close = df_1m['Close'].iloc[-1]
+                            if fast_cross_1m == "BUY" and current_close <= prev_high:
+                                logger.info(f"ℹ️ GOLD 1m FAST_EMA BUY пропущен: закрытие не выше предыдущего High")
+                                continue
+                            if fast_cross_1m == "SELL" and current_close >= prev_low:
+                                logger.info(f"ℹ️ GOLD 1m FAST_EMA SELL пропущен: закрытие не ниже предыдущего Low")
+                                continue
+
+                        # Динамические множители ATR
+                        current_atr, avg_atr14 = get_atr_stats(symbol, "1m")
+                        mult = ATR_MULTIPLIERS["1m"].copy()
+                        if current_atr and avg_atr14 and avg_atr14 > 0:
+                            if current_atr > avg_atr14 * 1.3:
+                                mult = {k: v*1.2 for k, v in mult.items()}
+                            elif current_atr < avg_atr14 * 0.7:
+                                mult = {k: v*0.8 for k, v in mult.items()}
+                        levels = calculate_atr_levels(price, atr_1m, fast_cross_1m, "1m", custom_mult=mult)
+
+                        # Диапазон входа и стоп по локальным экстремумам
+                        df_range = get_klines(symbol, "1m", limit=10)
+                        if df_range is not None and len(df_range) >= 2:
+                            min10 = df_range['Low'].min()
+                            max10 = df_range['High'].max()
+                            if fast_cross_1m == "BUY":
+                                range_from = min10
+                                range_to = price
+                                # Стоп ниже минимума
+                                levels['sl'] = round(min10 - atr_1m * 0.5, 2)
+                            else:
+                                range_from = price
+                                range_to = max10
+                                levels['sl'] = round(max10 + atr_1m * 0.5, 2)
+
+                            # Отправка с simple_message
                             await handle_new_signal(
                                 "GOLD", "1m", "fast_ema", fast_cross_1m, price,
-                                cur_fast3=cur_fast3_1m, cur_slow10=cur_slow10_1m, atr=atr_1m,
-                                volume=None, avg_volume=None, vwap=None,
-                                higher_trend=trend_5m, context=context
+                                atr=atr_1m, context=context, simple_message=True,
+                                range_entry={'from': range_from, 'to': range_to}
                             )
                 except Exception as e:
                     logger.error(f"❌ Ошибка в GOLD 1m: {e}")
@@ -814,7 +899,7 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (сдвиг +13 часов) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -859,7 +944,6 @@ def parse_investing_html(html_string):
                 continue
             raw_time = cols[0].get_text(strip=True)
             time_24 = _convert_to_24h_and_shift(raw_time)
-            logger.info(f"🕒 Investing сырое время: '{raw_time}' -> {time_24}")
             currency = cols[1].get_text(strip=True)
             name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
             if not name:
