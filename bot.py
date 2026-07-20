@@ -187,7 +187,7 @@ async def ask_gigachat(prompt):
     try:
         url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"model": "GigaChat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
+        payload = {"model": "GigaChat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 300}
         response = requests.post(url, headers=headers, json=payload, verify=False, timeout=15)
         if response.status_code == 200:
             data = response.json()
@@ -285,43 +285,150 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE = None):
     except Exception as e:
         logger.error(f"❌ Ошибка в update_news_sentiment: {e}", exc_info=True)
 
+# ---------- ТЕХНИЧЕСКИЙ ПАСПОРТ ----------
+def get_technical_passport(asset_name, tf, signal, price,
+                           rsi=None, ema_fast=None, ema_slow=None, atr=None,
+                           volume=None, avg_volume=None, vwap=None, higher_trend=None):
+    """
+    Собирает краткий технический «паспорт» для передачи в GigaChat.
+    """
+    lines = []
+    # Тренд старшего ТФ
+    if higher_trend:
+        trend_label = "восходящий" if higher_trend == "UP" else "нисходящий"
+        lines.append(f"Тренд старшего ТФ: {trend_label}")
+    else:
+        lines.append("Тренд старшего ТФ: не определён")
+
+    # RSI
+    if rsi is not None:
+        try:
+            rsi_val = float(rsi)
+            if rsi_val > 70:
+                zone = "перекупленность"
+            elif rsi_val < 30:
+                zone = "перепроданность"
+            else:
+                zone = "нейтрально"
+            lines.append(f"RSI(14): {rsi_val:.1f} ({zone})")
+        except:
+            lines.append(f"RSI(14): {rsi}")
+
+    # EMA
+    if ema_fast is not None and ema_slow is not None:
+        try:
+            ema_f = float(ema_fast)
+            ema_s = float(ema_slow)
+            if ema_f > ema_s:
+                lines.append(f"EMA: EMA{EMA_FAST}>{EMA_SLOW} (бычье пересечение)")
+            else:
+                lines.append(f"EMA: EMA{EMA_FAST}<{EMA_SLOW} (медвежье)")
+        except:
+            lines.append(f"EMA: {ema_fast}/{ema_slow}")
+
+    # VWAP
+    if vwap is not None and not (isinstance(vwap, float) and np.isnan(vwap)):
+        try:
+            vwap_f = float(vwap)
+            if price > vwap_f:
+                lines.append(f"Цена выше VWAP ({vwap_f:.2f})")
+            else:
+                lines.append(f"Цена ниже VWAP ({vwap_f:.2f})")
+        except:
+            pass
+
+    # ATR и волатильность
+    if atr is not None:
+        try:
+            atr_f = float(atr)
+            atr_pct = atr_f / float(price) * 100
+            if atr_pct < 0.05:
+                vol = "низкая"
+            elif atr_pct < 0.1:
+                vol = "средняя"
+            else:
+                vol = "высокая"
+            lines.append(f"ATR: {atr_f:.2f} ({atr_pct:.2f}% от цены, волатильность {vol})")
+        except:
+            lines.append(f"ATR: {atr}")
+
+    # Объём
+    if volume is not None and avg_volume is not None:
+        try:
+            vol_now = float(volume)
+            vol_avg = float(avg_volume)
+            if vol_avg > 0:
+                ratio = vol_now / vol_avg
+                if ratio > 1.5:
+                    vol_desc = "повышенный"
+                elif ratio < 0.5:
+                    vol_desc = "пониженный"
+                else:
+                    vol_desc = "средний"
+                lines.append(f"Объём: {ratio:.1f}x от среднего ({vol_desc})")
+        except:
+            pass
+
+    # Свечной паттерн (только для младших ТФ)
+    if tf in ["1m", "5m"]:
+        try:
+            symbol = ASSETS[asset_name]["symbol"]
+            df = get_klines(symbol, tf, limit=5)
+            if df is not None and len(df) >= 2:
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
+                body = abs(last['Close'] - last['Open'])
+                upper_shadow = last['High'] - max(last['Close'], last['Open'])
+                lower_shadow = min(last['Close'], last['Open']) - last['Low']
+                total_range = last['High'] - last['Low'] if last['High'] != last['Low'] else 0.0001
+                # Пинбар
+                if (lower_shadow > 2*body and upper_shadow < body) or (upper_shadow > 2*body and lower_shadow < body):
+                    lines.append("Свечной паттерн: пинбар")
+                # Поглощение
+                elif (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and
+                      last['Close'] > prev['Open'] and last['Open'] < prev['Close']):
+                    lines.append("Свечной паттерн: бычье поглощение")
+                elif (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and
+                      last['Open'] > prev['Close'] and last['Close'] < prev['Open']):
+                    lines.append("Свечной паттерн: медвежье поглощение")
+        except:
+            pass
+
+    return "\n".join(lines) if lines else "Технический паспорт недоступен"
+
 # ---------- AI анализ сигналов ----------
 async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=None, ema_slow=None,
-                          atr=None, volume=None, avg_volume=None, vwap=None, higher_trend=None):
+                          atr=None, volume=None, avg_volume=None, vwap=None, higher_trend=None, tf=None):
     if not GIGACHAT_AUTH_KEY: return None
     direction = "покупку" if signal == "BUY" else "продажу"
     price_str = safe_format(price)
-    rsi_str = f"{float(rsi):.1f}" if rsi is not None else "N/A"
-    ema_text = ""
-    if ema_fast is not None and ema_slow is not None:
-        ema_text = f"EMA{EMA_FAST}: {safe_format(ema_fast)}, EMA{EMA_SLOW}: {safe_format(ema_slow)}"
-    atr_str = safe_format(atr) if atr else ""
-    vol_str = ""
-    if volume is not None and avg_volume is not None and vwap is not None:
-        vol_str = (f"Объём свечи: {float(volume):.0f} | "
-                   f"Средний объём (50): {float(avg_volume):.0f} | "
-                   f"VWAP (50): ${float(vwap):.2f}\n")
-    trend_text = f"Тренд на старшем ТФ: {higher_trend}" if higher_trend else ""
+
+    # Собираем технический паспорт
+    passport = get_technical_passport(
+        asset_name, tf, signal, price,
+        rsi=rsi, ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
+        volume=volume, avg_volume=avg_volume, vwap=vwap, higher_trend=higher_trend
+    )
+
     news_text = news_sentiment.get(asset_name, "Новостной фон не оценён.")
 
     prompt = f"""
-Ты – опытный трейдер по золоту и криптовалютам. Оцени сигнал и учти новостной фон.
+Ты – опытный трейдер. Дай КРАТКУЮ оценку (2-3 предложения) на русском языке, учитывая технический паспорт и новости.
 
-Актив: {asset_name}
-Тип сигнала: {signal_type} (сигнал на {direction})
+Актив: {asset_name} [{tf}]
+Сигнал: {signal_type} на {direction}
 Цена: ${price_str}
-RSI (14): {rsi_str}
-{ema_text}
-{atr_str}
-{vol_str}
-{trend_text}
-Новостной фон (последние часы): {news_text}
 
-Ответь кратко, строго на русском языке, в формате:
-1. Оценка ситуации (одно предложение).
-2. Риск (одно предложение).
-3. Рекомендация: BUY/SELL/HOLD с пояснением.
-4. Оценка силы сигнала: напиши "✅ СИЛЬНЫЙ СИГНАЛ" или "⚠️ СЛАБЫЙ СИГНАЛ"
+Технический паспорт:
+{passport}
+
+Новостной фон: {news_text}
+
+Формат ответа (строго):
+1. Оценка ситуации: ...
+2. Риск: ...
+3. Рекомендация: BUY/SELL/HOLD
+4. Сила сигнала: ✅ СИЛЬНЫЙ или ⚠️ СЛАБЫЙ
 """
     try: return await ask_gigachat(prompt)
     except Exception as e:
@@ -399,7 +506,7 @@ def get_atr_value(symbol, interval):
     return atr[-1]
 
 def get_atr_stats(symbol, interval):
-    """Возвращает текущий ATR и средний ATR за последние 14 свечей (для динамических множителей)."""
+    """Возвращает текущий ATR и средний ATR за 14 свечей (для динамических множителей)."""
     df = get_klines(symbol, interval, limit=64)
     if df is None or len(df) < 15: return None, None
     high = df['High'].values; low = df['Low'].values; close = df['Close'].values
@@ -412,7 +519,6 @@ def get_atr_stats(symbol, interval):
     return current_atr, avg_atr14
 
 def get_ema_value(symbol, interval, period):
-    """Возвращает последнее значение EMA с указанным периодом."""
     df = get_klines(symbol, interval, limit=LOOKBACK)
     if df is None or len(df) < period: return None
     close = df['Close'].values
@@ -559,13 +665,15 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
                             cur_fast3=None, cur_slow10=None, atr=None, volume=None, avg_volume=None, vwap=None,
                             higher_trend=None, context=None, simple_message=False, range_entry=None):
     if has_open_signal(asset_name, tf, signal_type, signal): return
-    levels = calculate_atr_levels(price, atr, signal, tf, custom_mult=None if not simple_message else None)  # будет пересчитано ниже для simple
-    ai_analysis = None
-    if not simple_message:
-        ai_analysis = await get_ai_analysis(asset_name, signal_type, signal, price, rsi,
-                                            ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
-                                            volume=volume, avg_volume=avg_volume, vwap=vwap,
-                                            higher_trend=higher_trend)
+    levels = calculate_atr_levels(price, atr, signal, tf)
+
+    # AI-анализ теперь для всех сигналов
+    ai_analysis = await get_ai_analysis(
+        asset_name, signal_type, signal, price, rsi,
+        ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
+        volume=volume, avg_volume=avg_volume, vwap=vwap,
+        higher_trend=higher_trend, tf=tf
+    )
     signal_dict = create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis)
     add_active_signal(asset_name, tf, signal_dict)
 
@@ -575,7 +683,6 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     tag = ASSETS[asset_name]['tag']
 
     if simple_message:
-        # Формат для GOLD 1m: диапазон, стоп, TP1, TP2
         entry_from = range_entry['from']
         entry_to = range_entry['to']
         msg = f"{tag} ⭐ 📢 Входим в {direction.upper()} {asset_name} [{tf}]\n"
@@ -595,7 +702,9 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
         if ema_fast is not None: msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
         if cur_fast3 is not None: msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
         if volume is not None: msg += f"📊 Объём: {float(volume):.0f} | Средний: {float(avg_volume):.0f} | VWAP: ${float(vwap):.2f}\n"
-        if ai_analysis: msg += f"\n🧠 {ai_analysis}"
+
+    if ai_analysis:
+        msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
 # ---------- Основная логика ----------
@@ -687,19 +796,17 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
 
-            # === GOLD 1m FAST_EMA (с фильтрами и новым форматом) ===
+            # === GOLD 1m FAST_EMA ===
             if name == "GOLD" and ENABLE_GOLD_1M:
                 try:
                     fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
                     if fast_cross_1m:
                         atr_1m = get_atr_value(symbol, "1m")
-                        if atr_1m is None: return
-                        # Фильтр минимальной волатильности (0.05% от цены)
+                        if atr_1m is None: continue
                         if atr_1m < price * 0.0005:
                             logger.info(f"ℹ️ GOLD 1m FAST_EMA пропущен: низкая волатильность (ATR {atr_1m:.2f})")
                             continue
 
-                        # Фильтр тренда по EMA(50) на 1m
                         ema50_1m = get_ema_value(symbol, "1m", 50)
                         if ema50_1m is not None:
                             if fast_cross_1m == "BUY" and price <= ema50_1m:
@@ -709,7 +816,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 logger.info(f"ℹ️ GOLD 1m FAST_EMA SELL пропущен: цена выше EMA50")
                                 continue
 
-                        # Свечной фильтр: закрытие выше/ниже предыдущего экстремума
                         df_1m = get_klines(symbol, "1m", limit=5)
                         if df_1m is not None and len(df_1m) >= 2:
                             prev_high = df_1m['High'].iloc[-2]
@@ -722,7 +828,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 logger.info(f"ℹ️ GOLD 1m FAST_EMA SELL пропущен: закрытие не ниже предыдущего Low")
                                 continue
 
-                        # Динамические множители ATR
                         current_atr, avg_atr14 = get_atr_stats(symbol, "1m")
                         mult = ATR_MULTIPLIERS["1m"].copy()
                         if current_atr and avg_atr14 and avg_atr14 > 0:
@@ -732,7 +837,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 mult = {k: v*0.8 for k, v in mult.items()}
                         levels = calculate_atr_levels(price, atr_1m, fast_cross_1m, "1m", custom_mult=mult)
 
-                        # Диапазон входа и стоп по локальным экстремумам
                         df_range = get_klines(symbol, "1m", limit=10)
                         if df_range is not None and len(df_range) >= 2:
                             min10 = df_range['Low'].min()
@@ -740,17 +844,17 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                             if fast_cross_1m == "BUY":
                                 range_from = min10
                                 range_to = price
-                                # Стоп ниже минимума
                                 levels['sl'] = round(min10 - atr_1m * 0.5, 2)
                             else:
                                 range_from = price
                                 range_to = max10
                                 levels['sl'] = round(max10 + atr_1m * 0.5, 2)
 
-                            # Отправка с simple_message
+                            trend_5m = get_trend_direction(symbol, "1m", "5m")
                             await handle_new_signal(
                                 "GOLD", "1m", "fast_ema", fast_cross_1m, price,
-                                atr=atr_1m, context=context, simple_message=True,
+                                atr=atr_1m, higher_trend=trend_5m, context=context,
+                                simple_message=True,
                                 range_entry={'from': range_from, 'to': range_to}
                             )
                 except Exception as e:
