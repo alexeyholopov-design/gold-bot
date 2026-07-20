@@ -289,36 +289,26 @@ async def update_news_sentiment(context: ContextTypes.DEFAULT_TYPE = None):
 def get_technical_passport(asset_name, tf, signal, price,
                            rsi=None, ema_fast=None, ema_slow=None, atr=None,
                            volume=None, avg_volume=None, vwap=None, higher_trend=None):
-    """
-    Собирает краткий технический «паспорт» для передачи в GigaChat.
-    """
     lines = []
-    # Тренд старшего ТФ
     if higher_trend:
         trend_label = "восходящий" if higher_trend == "UP" else "нисходящий"
         lines.append(f"Тренд старшего ТФ: {trend_label}")
     else:
         lines.append("Тренд старшего ТФ: не определён")
 
-    # RSI
     if rsi is not None:
         try:
             rsi_val = float(rsi)
-            if rsi_val > 70:
-                zone = "перекупленность"
-            elif rsi_val < 30:
-                zone = "перепроданность"
-            else:
-                zone = "нейтрально"
+            if rsi_val > 70: zone = "перекупленность"
+            elif rsi_val < 30: zone = "перепроданность"
+            else: zone = "нейтрально"
             lines.append(f"RSI(14): {rsi_val:.1f} ({zone})")
         except:
             lines.append(f"RSI(14): {rsi}")
 
-    # EMA
     if ema_fast is not None and ema_slow is not None:
         try:
-            ema_f = float(ema_fast)
-            ema_s = float(ema_slow)
+            ema_f = float(ema_fast); ema_s = float(ema_slow)
             if ema_f > ema_s:
                 lines.append(f"EMA: EMA{EMA_FAST}>{EMA_SLOW} (бычье пересечение)")
             else:
@@ -326,73 +316,54 @@ def get_technical_passport(asset_name, tf, signal, price,
         except:
             lines.append(f"EMA: {ema_fast}/{ema_slow}")
 
-    # VWAP
     if vwap is not None and not (isinstance(vwap, float) and np.isnan(vwap)):
         try:
             vwap_f = float(vwap)
-            if price > vwap_f:
-                lines.append(f"Цена выше VWAP ({vwap_f:.2f})")
-            else:
-                lines.append(f"Цена ниже VWAP ({vwap_f:.2f})")
-        except:
-            pass
+            if price > vwap_f: lines.append(f"Цена выше VWAP ({vwap_f:.2f})")
+            else: lines.append(f"Цена ниже VWAP ({vwap_f:.2f})")
+        except: pass
 
-    # ATR и волатильность
     if atr is not None:
         try:
             atr_f = float(atr)
             atr_pct = atr_f / float(price) * 100
-            if atr_pct < 0.05:
-                vol = "низкая"
-            elif atr_pct < 0.1:
-                vol = "средняя"
-            else:
-                vol = "высокая"
+            if atr_pct < 0.05: vol = "низкая"
+            elif atr_pct < 0.1: vol = "средняя"
+            else: vol = "высокая"
             lines.append(f"ATR: {atr_f:.2f} ({atr_pct:.2f}% от цены, волатильность {vol})")
         except:
             lines.append(f"ATR: {atr}")
 
-    # Объём
     if volume is not None and avg_volume is not None:
         try:
-            vol_now = float(volume)
-            vol_avg = float(avg_volume)
+            vol_now = float(volume); vol_avg = float(avg_volume)
             if vol_avg > 0:
                 ratio = vol_now / vol_avg
-                if ratio > 1.5:
-                    vol_desc = "повышенный"
-                elif ratio < 0.5:
-                    vol_desc = "пониженный"
-                else:
-                    vol_desc = "средний"
-                lines.append(f"Объём: {ratio:.1f}x от среднего ({vol_desc})")
-        except:
-            pass
+                if ratio > 1.5: desc = "повышенный"
+                elif ratio < 0.5: desc = "пониженный"
+                else: desc = "средний"
+                lines.append(f"Объём: {ratio:.1f}x от среднего ({desc})")
+        except: pass
 
-    # Свечной паттерн (только для младших ТФ)
     if tf in ["1m", "5m"]:
         try:
             symbol = ASSETS[asset_name]["symbol"]
             df = get_klines(symbol, tf, limit=5)
             if df is not None and len(df) >= 2:
-                last = df.iloc[-1]
-                prev = df.iloc[-2]
+                last = df.iloc[-1]; prev = df.iloc[-2]
                 body = abs(last['Close'] - last['Open'])
                 upper_shadow = last['High'] - max(last['Close'], last['Open'])
                 lower_shadow = min(last['Close'], last['Open']) - last['Low']
                 total_range = last['High'] - last['Low'] if last['High'] != last['Low'] else 0.0001
-                # Пинбар
                 if (lower_shadow > 2*body and upper_shadow < body) or (upper_shadow > 2*body and lower_shadow < body):
                     lines.append("Свечной паттерн: пинбар")
-                # Поглощение
                 elif (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and
                       last['Close'] > prev['Open'] and last['Open'] < prev['Close']):
                     lines.append("Свечной паттерн: бычье поглощение")
                 elif (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and
                       last['Open'] > prev['Close'] and last['Close'] < prev['Open']):
                     lines.append("Свечной паттерн: медвежье поглощение")
-        except:
-            pass
+        except: pass
 
     return "\n".join(lines) if lines else "Технический паспорт недоступен"
 
@@ -403,13 +374,11 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
     direction = "покупку" if signal == "BUY" else "продажу"
     price_str = safe_format(price)
 
-    # Собираем технический паспорт
     passport = get_technical_passport(
         asset_name, tf, signal, price,
         rsi=rsi, ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
         volume=volume, avg_volume=avg_volume, vwap=vwap, higher_trend=higher_trend
     )
-
     news_text = news_sentiment.get(asset_name, "Новостной фон не оценён.")
 
     prompt = f"""
@@ -506,7 +475,6 @@ def get_atr_value(symbol, interval):
     return atr[-1]
 
 def get_atr_stats(symbol, interval):
-    """Возвращает текущий ATR и средний ATR за 14 свечей (для динамических множителей)."""
     df = get_klines(symbol, interval, limit=64)
     if df is None or len(df) < 15: return None, None
     high = df['High'].values; low = df['Low'].values; close = df['Close'].values
@@ -667,7 +635,6 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     if has_open_signal(asset_name, tf, signal_type, signal): return
     levels = calculate_atr_levels(price, atr, signal, tf)
 
-    # AI-анализ теперь для всех сигналов
     ai_analysis = await get_ai_analysis(
         asset_name, signal_type, signal, price, rsi,
         ema_fast=ema_fast, ema_slow=ema_slow, atr=atr,
@@ -715,7 +682,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
         return
 
     now_msk = get_moscow_time()
-    if now_msk.hour >= 23 or now_msk.weekday() in (5, 6):
+    # Не работаем с 23:00 до 07:00 МСК и в выходные
+    if now_msk.hour >= 23 or now_msk.hour < 7 or now_msk.weekday() in (5, 6):
         logger.info("⏸️ Генерация сигналов приостановлена (время/выходной)")
     else:
         for name, asset in ASSETS.items():
@@ -1003,13 +971,31 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (исправленный, через сессию) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
+INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "X-Requested-With": "XMLHttpRequest",
     "Content-Type": "application/x-www-form-urlencoded",
+    "Referer": "https://www.investing.com/economic-calendar/",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
 }
+
+def get_investing_session():
+    """Создаёт сессию с куками после захода на страницу календаря."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": INVESTING_HEADERS["User-Agent"],
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": INVESTING_HEADERS["Accept-Language"],
+    })
+    try:
+        session.get(INVESTING_CALENDAR_URL, timeout=10)
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось получить сессию Investing: {e}")
+    return session
 
 def _convert_to_24h_and_shift(time_str: str) -> str:
     if not time_str:
@@ -1078,7 +1064,8 @@ def get_investing_high_impact_events():
             "timeZone": "3",
             "currentTab": "custom",
         }
-        resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        session = get_investing_session()
+        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         if not resp.ok:
             logger.error(f"📅 Investing.com статус: {resp.status_code}")
             return None
@@ -1119,7 +1106,8 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
             "timeZone": "3",
             "currentTab": "custom",
         }
-        resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        session = get_investing_session()
+        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         html_str = data.get('data') if isinstance(data, dict) else data
