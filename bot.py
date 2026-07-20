@@ -84,7 +84,7 @@ LOOKBACK = 50
 EMA_FAST = 20; EMA_SLOW = 50; EMA_FAST_FAST = 3; EMA_SLOW_FAST = 10
 
 ATR_MULTIPLIERS = {
-    "1m":  {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0},
+    "1m":  {"SL": 1.7, "TP1": 2.3, "TP2": 3.5, "TP3": 0},   # TP3 убран (0)
     "5m":  {"SL": 1.2, "TP1": 1.5, "TP2": 2.0, "TP3": 3.0},
     "15m": {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0},
     "1h":  {"SL": 2.0, "TP1": 3.0, "TP2": 5.0, "TP3": 8.0},
@@ -415,11 +415,17 @@ def get_trend_direction(symbol, base_interval, check_interval, fast=20, slow=50)
 def calculate_atr_levels(price, atr, signal_type, tf):
     mult = ATR_MULTIPLIERS.get(tf, {"SL": 1.5, "TP1": 2.0, "TP2": 3.0, "TP3": 5.0})
     if signal_type == "BUY":
-        sl = price - atr * mult["SL"]; tp1 = price + atr * mult["TP1"]; tp2 = price + atr * mult["TP2"]; tp3 = price + atr * mult["TP3"]
+        sl = price - atr * mult["SL"]
+        tp1 = price + atr * mult["TP1"]
+        tp2 = price + atr * mult["TP2"]
+        tp3 = price + atr * mult.get("TP3", 0)
     else:
-        sl = price + atr * mult["SL"]; tp1 = price - atr * mult["TP1"]; tp2 = price - atr * mult["TP2"]; tp3 = price - atr * mult["TP3"]
+        sl = price + atr * mult["SL"]
+        tp1 = price - atr * mult["TP1"]
+        tp2 = price - atr * mult["TP2"]
+        tp3 = price - atr * mult.get("TP3", 0)
     return {'price': round(price,2), 'sl': round(sl,2), 'tp1': round(tp1,2),
-            'tp2': round(tp2,2), 'tp3': round(tp3,2), 'atr': round(atr,2)}
+            'tp2': round(tp2,2), 'tp3': round(tp3,2) if tp3 != 0 else 0, 'atr': round(atr,2)}
 
 def create_signal_dict(asset_name, tf, signal_type, signal, levels, ai_analysis=None):
     return {
@@ -496,7 +502,7 @@ async def check_signal_levels(bot, signal_dict):
                            f"⏱ Время сделки: {minutes:.1f} мин.")
                     await send_to_chat(FakeContext(bot), msg)
                     logger.info(f"✅ TP2 для {asset_name} {signal_dict['tf']}")
-            if not signal_dict['tp3_hit'] and not signal_dict['closed']:
+            if not signal_dict['tp3_hit'] and not signal_dict['closed'] and levels.get('tp3', 0) != 0:
                 tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
                 if tp3_hit:
                     signal_dict['tp3_hit'] = True
@@ -545,7 +551,8 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     msg += f"🛑 SL: ${levels['sl']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('SL', '?')})\n"
     msg += f"🎯 TP1: ${levels['tp1']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP1', '?')})\n"
     msg += f"🎯 TP2: ${levels['tp2']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP2', '?')})\n"
-    msg += f"🎯 TP3: ${levels['tp3']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
+    if levels.get('tp3', 0) != 0:
+        msg += f"🎯 TP3: ${levels['tp3']:.2f} (ATR×{ATR_MULTIPLIERS.get(tf, {}).get('TP3', '?')})\n"
     if rsi is not None: msg += f"📊 RSI: {float(rsi):.1f}\n"
     if ema_fast is not None: msg += f"📊 EMA: {float(ema_fast):.2f} / {float(ema_slow):.2f}\n"
     if cur_fast3 is not None: msg += f"📊 EMA(3/10): {float(cur_fast3):.2f} / {float(cur_slow10):.2f}\n"
@@ -553,110 +560,116 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     if ai_analysis: msg += f"\n🧠 {ai_analysis}"
     await send_to_chat(context, msg)
 
-# ---------- Основная логика ----------
+# ---------- Основная логика (с блокировкой по времени и дням) ----------
 async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏰ Автоматическая проверка запущена")
     if CHANNEL_ID is None and chat_id is None:
         logger.warning("⚠️ Нет получателей")
         return
-    for name, asset in ASSETS.items():
-        symbol = asset['symbol']
-        for tf in ASSET_TIMEFRAMES[name]:
-            price = get_current_price(symbol)
-            if price is None: continue
-            try:
-                df_vol = get_klines(symbol, tf, limit=50)
-                avg_volume = None; vwap = None; volume_now = None
-                if df_vol is not None and len(df_vol) >= 2:
-                    volume_now = df_vol['Volume'].iloc[-1]
-                    if pd.notna(volume_now):
-                        avg_volume = df_vol['Volume'].mean()
-                        typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
-                        if df_vol['Volume'].sum() > 0:
-                            vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
-                        else: vwap = price
 
-                vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
-                if volume_now is not None and avg_volume is not None and avg_volume > 0:
-                    if volume_now < avg_volume * vol_threshold:
-                        logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
-                        continue
+    now_msk = get_moscow_time()
+    # Блокировка генерации новых сигналов после 23:00 МСК или в выходные
+    if now_msk.hour >= 23 or now_msk.weekday() in (5, 6):
+        logger.info("⏸️ Генерация сигналов приостановлена (время/выходной)")
+    else:
+        for name, asset in ASSETS.items():
+            symbol = asset['symbol']
+            for tf in ASSET_TIMEFRAMES[name]:
+                price = get_current_price(symbol)
+                if price is None: continue
+                try:
+                    df_vol = get_klines(symbol, tf, limit=50)
+                    avg_volume = None; vwap = None; volume_now = None
+                    if df_vol is not None and len(df_vol) >= 2:
+                        volume_now = df_vol['Volume'].iloc[-1]
+                        if pd.notna(volume_now):
+                            avg_volume = df_vol['Volume'].mean()
+                            typical_price = (df_vol['High'] + df_vol['Low'] + df_vol['Close']) / 3
+                            if df_vol['Volume'].sum() > 0:
+                                vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
+                            else: vwap = price
 
-                if tf != "5m" and vwap is not None and not np.isnan(vwap): pass
-
-                current_rsi, prev_rsi, _, _ = get_rsi_and_bars(symbol, tf)
-                atr = get_atr_value(symbol, tf)
-
-                # EMA
-                ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf, EMA_FAST, EMA_SLOW)
-                if ema_signal and atr is not None:
-                    if tf != "5m" and vwap is not None and not np.isnan(vwap):
-                        if (ema_signal == "BUY" and price <= vwap) or (ema_signal == "SELL" and price >= vwap):
-                            logger.info(f"ℹ️ EMA {ema_signal} для {name} {tf} пропущен: VWAP")
+                    vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
+                    if volume_now is not None and avg_volume is not None and avg_volume > 0:
+                        if volume_now < avg_volume * vol_threshold:
+                            logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
                             continue
-                    await handle_new_signal(name, tf, "ema", ema_signal, price,
-                                            ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
-                                            volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-                # Combined
-                rsi_signal = None
-                if current_rsi is not None and prev_rsi is not None:
-                    if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD: rsi_signal = "BUY"
-                    elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT: rsi_signal = "SELL"
-                if rsi_signal and ema_signal and atr is not None:
-                    if rsi_signal == "BUY" and cur_fast > cur_slow: combined_signal = "BUY"
-                    elif rsi_signal == "SELL" and cur_fast < cur_slow: combined_signal = "SELL"
-                    else: combined_signal = None
-                    if combined_signal:
+                    if tf != "5m" and vwap is not None and not np.isnan(vwap): pass
+
+                    current_rsi, prev_rsi, _, _ = get_rsi_and_bars(symbol, tf)
+                    atr = get_atr_value(symbol, tf)
+
+                    # EMA
+                    ema_signal, cur_fast, cur_slow, _, _ = get_ema_cross(symbol, tf, EMA_FAST, EMA_SLOW)
+                    if ema_signal and atr is not None:
                         if tf != "5m" and vwap is not None and not np.isnan(vwap):
-                            if (combined_signal == "BUY" and price <= vwap) or (combined_signal == "SELL" and price >= vwap):
-                                logger.info(f"ℹ️ Combined для {name} {tf} пропущен: VWAP")
+                            if (ema_signal == "BUY" and price <= vwap) or (ema_signal == "SELL" and price >= vwap):
+                                logger.info(f"ℹ️ EMA {ema_signal} для {name} {tf} пропущен: VWAP")
                                 continue
-                        await handle_new_signal(name, tf, "combined", combined_signal, price,
-                                                rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
+                        await handle_new_signal(name, tf, "ema", ema_signal, price,
+                                                ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
                                                 volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-                # FAST EMA
-                fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, tf, EMA_FAST_FAST, EMA_SLOW_FAST)
-                if fast_cross and atr is not None:
-                    higher_tf = "1h" if tf == "15m" else "15m" if tf != "1h" else None
-                    trend_ok = True
-                    if higher_tf:
-                        trend = get_trend_direction(symbol, tf, higher_tf)
-                        if (fast_cross == "BUY" and trend != "UP") or (fast_cross == "SELL" and trend != "DOWN"):
-                            trend_ok = False
-                    if trend_ok:
-                        if tf != "5m" and vwap is not None and not np.isnan(vwap):
-                            if (fast_cross == "BUY" and price <= vwap) or (fast_cross == "SELL" and price >= vwap):
-                                logger.info(f"ℹ️ FAST_EMA для {name} {tf} пропущен: VWAP")
-                                continue
-                        await handle_new_signal(name, tf, "fast_ema", fast_cross, price,
-                                                cur_fast3=cur_fast3, cur_slow10=cur_slow10, atr=atr,
-                                                volume=volume_now, avg_volume=avg_volume, vwap=vwap,
-                                                higher_trend=trend if higher_tf else None, context=context)
-            except Exception as e:
-                logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
+                    # Combined
+                    rsi_signal = None
+                    if current_rsi is not None and prev_rsi is not None:
+                        if prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD: rsi_signal = "BUY"
+                        elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT: rsi_signal = "SELL"
+                    if rsi_signal and ema_signal and atr is not None:
+                        if rsi_signal == "BUY" and cur_fast > cur_slow: combined_signal = "BUY"
+                        elif rsi_signal == "SELL" and cur_fast < cur_slow: combined_signal = "SELL"
+                        else: combined_signal = None
+                        if combined_signal:
+                            if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                                if (combined_signal == "BUY" and price <= vwap) or (combined_signal == "SELL" and price >= vwap):
+                                    logger.info(f"ℹ️ Combined для {name} {tf} пропущен: VWAP")
+                                    continue
+                            await handle_new_signal(name, tf, "combined", combined_signal, price,
+                                                    rsi=current_rsi, ema_fast=cur_fast, ema_slow=cur_slow, atr=atr,
+                                                    volume=volume_now, avg_volume=avg_volume, vwap=vwap, context=context)
 
-        # === GOLD 1m FAST_EMA ===
-        if name == "GOLD" and ENABLE_GOLD_1M:
-            try:
-                fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
-                if fast_cross_1m:
-                    atr_1m = get_atr_value(symbol, "1m")
-                    if atr_1m is not None:
-                        trend_5m = get_trend_direction(symbol, "1m", "5m")
-                        if trend_5m is not None:
-                            if (fast_cross_1m == "BUY" and trend_5m != "UP") or (fast_cross_1m == "SELL" and trend_5m != "DOWN"):
-                                logger.info(f"ℹ️ GOLD 1m FAST_EMA {fast_cross_1m} пропущен: тренд 5m {trend_5m}")
-                                continue
-                        await handle_new_signal(
-                            "GOLD", "1m", "fast_ema", fast_cross_1m, price,
-                            cur_fast3=cur_fast3_1m, cur_slow10=cur_slow10_1m, atr=atr_1m,
-                            volume=None, avg_volume=None, vwap=None,
-                            higher_trend=trend_5m, context=context
-                        )
-            except Exception as e:
-                logger.error(f"❌ Ошибка в GOLD 1m: {e}")
+                    # FAST EMA
+                    fast_cross, cur_fast3, cur_slow10, _, _ = get_ema_cross(symbol, tf, EMA_FAST_FAST, EMA_SLOW_FAST)
+                    if fast_cross and atr is not None:
+                        higher_tf = "1h" if tf == "15m" else "15m" if tf != "1h" else None
+                        trend_ok = True
+                        if higher_tf:
+                            trend = get_trend_direction(symbol, tf, higher_tf)
+                            if (fast_cross == "BUY" and trend != "UP") or (fast_cross == "SELL" and trend != "DOWN"):
+                                trend_ok = False
+                        if trend_ok:
+                            if tf != "5m" and vwap is not None and not np.isnan(vwap):
+                                if (fast_cross == "BUY" and price <= vwap) or (fast_cross == "SELL" and price >= vwap):
+                                    logger.info(f"ℹ️ FAST_EMA для {name} {tf} пропущен: VWAP")
+                                    continue
+                            await handle_new_signal(name, tf, "fast_ema", fast_cross, price,
+                                                    cur_fast3=cur_fast3, cur_slow10=cur_slow10, atr=atr,
+                                                    volume=volume_now, avg_volume=avg_volume, vwap=vwap,
+                                                    higher_trend=trend if higher_tf else None, context=context)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
+
+            # === GOLD 1m FAST_EMA ===
+            if name == "GOLD" and ENABLE_GOLD_1M:
+                try:
+                    fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
+                    if fast_cross_1m:
+                        atr_1m = get_atr_value(symbol, "1m")
+                        if atr_1m is not None:
+                            trend_5m = get_trend_direction(symbol, "1m", "5m")
+                            if trend_5m is not None:
+                                if (fast_cross_1m == "BUY" and trend_5m != "UP") or (fast_cross_1m == "SELL" and trend_5m != "DOWN"):
+                                    logger.info(f"ℹ️ GOLD 1m FAST_EMA {fast_cross_1m} пропущен: тренд 5m {trend_5m}")
+                                    continue
+                            await handle_new_signal(
+                                "GOLD", "1m", "fast_ema", fast_cross_1m, price,
+                                cur_fast3=cur_fast3_1m, cur_slow10=cur_slow10_1m, atr=atr_1m,
+                                volume=None, avg_volume=None, vwap=None,
+                                higher_trend=trend_5m, context=context
+                            )
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в GOLD 1m: {e}")
 
     await check_all_active_signals(context.bot)
 
@@ -810,14 +823,9 @@ INVESTING_HEADERS = {
 }
 
 def _convert_to_24h_and_shift(time_str: str) -> str:
-    """
-    Преобразует время из формата "HH:MM AM/PM" или "HH:MM" в 24-часовой "HH:MM".
-    Затем добавляет 13 часов (сдвиг часового пояса для МСК).
-    """
     if not time_str:
         return time_str
     time_str = time_str.strip()
-    # Ищем AM/PM
     match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_str, re.IGNORECASE)
     if match:
         hour = int(match.group(1))
@@ -829,7 +837,6 @@ def _convert_to_24h_and_shift(time_str: str) -> str:
             hour = 0
         hour24 = hour
     else:
-        # Уже 24-часовой формат, парсим часы
         parts = time_str.split(':')
         try:
             hour24 = int(parts[0])
@@ -839,7 +846,6 @@ def _convert_to_24h_and_shift(time_str: str) -> str:
         else:
             minute = parts[1]
 
-    # Добавляем 13 часов
     shifted_hour = (hour24 + 13) % 24
     return f"{shifted_hour:02d}:{minute}"
 
@@ -855,7 +861,6 @@ def parse_investing_html(html_string):
             time_24 = _convert_to_24h_and_shift(raw_time)
             logger.info(f"🕒 Investing сырое время: '{raw_time}' -> {time_24}")
             currency = cols[1].get_text(strip=True)
-            # название события — обычно в третьем столбце (иногда во втором)
             name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
             if not name:
                 name = cols[2].get_text(strip=True)
@@ -973,7 +978,7 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
 
-# ---------- Утренний обзор (с принудительным обновлением новостей) ----------
+# ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
     logger.info("📊 Формирование утреннего обзора...")
     if context is None and telegram_app:
@@ -982,7 +987,6 @@ async def send_morning_report(context=None):
         logger.error("❌ Нет контекста для отправки утреннего обзора")
         return
 
-    # --- Принудительно обновляем новостной фон перед отчётом ---
     await update_news_sentiment(context)
 
     msg = "🌅 **Утренний обзор рынка**\n\n"
@@ -1059,6 +1063,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/crypto – сводка\n"
         "/status – активные сигналы\n"
         "/today – отчёт за сегодня\n"
+        "/week – отчёт за неделю\n"
         "/ai {актив} – AI-анализ\n"
         "/morning – утренний обзор\n"
         "/gold_1m_on – включить GOLD 1m\n"
@@ -1134,6 +1139,11 @@ async def today_report(update, context):
     report = await generate_today_report()
     await update.message.reply_text(report)
 
+async def week_report(update, context):
+    await update.message.reply_text("⏳ Формирую недельный отчёт...")
+    report = await generate_weekly_report()
+    await update.message.reply_text(report)
+
 async def ai_command(update, context):
     if not context.args:
         await update.message.reply_text("Укажите актив: /ai BTC")
@@ -1193,6 +1203,7 @@ def run_bot():
     app.add_handler(CommandHandler("crypto", crypto))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("today", today_report))
+    app.add_handler(CommandHandler("week", week_report))
     app.add_handler(CommandHandler("ai", ai_command))
     app.add_handler(CommandHandler("morning", morning_command))
     app.add_handler(CommandHandler("gold_1m_on", gold_1m_on))
