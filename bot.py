@@ -682,7 +682,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
         return
 
     now_msk = get_moscow_time()
-    # Не работаем с 23:00 до 07:00 МСК и в выходные
     if now_msk.hour >= 23 or now_msk.hour < 7 or now_msk.weekday() in (5, 6):
         logger.info("⏸️ Генерация сигналов приостановлена (время/выходной)")
     else:
@@ -703,7 +702,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
                             else: vwap = price
 
-                    vol_threshold = 0.6 if tf in ["15m", "1h"] else 0.8
+                    # Снижен порог объёма до 0.5 для всех
+                    vol_threshold = 0.5
                     if volume_now is not None and avg_volume is not None and avg_volume > 0:
                         if volume_now < avg_volume * vol_threshold:
                             logger.info(f"ℹ️ Сигнал для {name} {tf} пропущен: объём {volume_now:.0f} < средний {avg_volume:.0f}")
@@ -771,7 +771,8 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     if fast_cross_1m:
                         atr_1m = get_atr_value(symbol, "1m")
                         if atr_1m is None: continue
-                        if atr_1m < price * 0.0005:
+                        # Минимальная волатильность снижена до 0.01%
+                        if atr_1m < price * 0.0001:
                             logger.info(f"ℹ️ GOLD 1m FAST_EMA пропущен: низкая волатильность (ATR {atr_1m:.2f})")
                             continue
 
@@ -971,188 +972,13 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ENABLE_GOLD_1M = False
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (исправленный, через сессию) ----------
-INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
-INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
-INVESTING_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "X-Requested-With": "XMLHttpRequest",
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Referer": "https://www.investing.com/economic-calendar/",
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-def get_investing_session():
-    """Создаёт сессию с куками после захода на страницу календаря."""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": INVESTING_HEADERS["User-Agent"],
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": INVESTING_HEADERS["Accept-Language"],
-    })
-    try:
-        session.get(INVESTING_CALENDAR_URL, timeout=10)
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось получить сессию Investing: {e}")
-    return session
-
-def _convert_to_24h_and_shift(time_str: str) -> str:
-    if not time_str:
-        return time_str
-    time_str = time_str.strip()
-    match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_str, re.IGNORECASE)
-    if match:
-        hour = int(match.group(1))
-        minute = match.group(2)
-        ampm = match.group(3).upper()
-        if ampm == 'PM' and hour != 12:
-            hour += 12
-        elif ampm == 'AM' and hour == 12:
-            hour = 0
-        hour24 = hour
-    else:
-        parts = time_str.split(':')
-        try:
-            hour24 = int(parts[0])
-            minute = parts[1]
-        except (ValueError, IndexError):
-            return time_str
-        else:
-            minute = parts[1]
-
-    shifted_hour = (hour24 + 13) % 24
-    return f"{shifted_hour:02d}:{minute}"
-
-def parse_investing_html(html_string):
-    soup = BeautifulSoup(html_string, 'html.parser')
-    events = []
-    for row in soup.find_all('tr', id=lambda x: x and x.startswith('eventRowId_')):
-        try:
-            cols = row.find_all('td')
-            if len(cols) < 8:
-                continue
-            raw_time = cols[0].get_text(strip=True)
-            time_24 = _convert_to_24h_and_shift(raw_time)
-            currency = cols[1].get_text(strip=True)
-            name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
-            if not name:
-                name = cols[2].get_text(strip=True)
-            actual = cols[4].get_text(strip=True) if len(cols) > 4 else ''
-            forecast = cols[5].get_text(strip=True) if len(cols) > 5 else ''
-            previous = cols[6].get_text(strip=True) if len(cols) > 6 else ''
-
-            events.append({
-                'time': time_24,
-                'currency': currency,
-                'event': name,
-                'actual': actual if actual != '' else None,
-                'forecast': forecast,
-                'previous': previous
-            })
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка парсинга строки Investing: {e}")
-    return events
-
+# ---------- ПАРСИНГ ИНВЕСТИНГА (заглушка) ----------
 def get_investing_high_impact_events():
-    try:
-        today_str = get_moscow_time().strftime("%Y-%m-%d")
-        payload = {
-            "dateFrom": today_str,
-            "dateTo": today_str,
-            "importance[]": "3",
-            "timeZone": "3",
-            "currentTab": "custom",
-        }
-        session = get_investing_session()
-        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
-        if not resp.ok:
-            logger.error(f"📅 Investing.com статус: {resp.status_code}")
-            return None
-        data = resp.json()
-        html_str = data.get('data') if isinstance(data, dict) else data
-        if not html_str or not isinstance(html_str, str):
-            logger.info("📅 Investing.com: пустой HTML")
-            return None
-
-        events = parse_investing_html(html_str)
-        if not events:
-            logger.info(f"📅 Investing.com: не найдено событий ★★★ на {today_str}")
-            return None
-
-        lines = []
-        for ev in events:
-            line = f"🕒 {ev['time']} | {ev['currency']} | {ev['event']}"
-            if ev['forecast']:
-                line += f" | Прогноз: {ev['forecast']}"
-            if ev['previous']:
-                line += f" | Предыдущее: {ev['previous']}"
-            lines.append(line)
-        return "\n".join(lines)
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
-        return None
-
-notified_events = set()
+    logger.warning("⚠️ Investing.com недоступен (403). Важные события не загружены.")
+    return None
 
 async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
-    global notified_events
-    try:
-        today_str = get_moscow_time().strftime("%Y-%m-%d")
-        payload = {
-            "dateFrom": today_str,
-            "dateTo": today_str,
-            "importance[]": "3",
-            "timeZone": "3",
-            "currentTab": "custom",
-        }
-        session = get_investing_session()
-        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        html_str = data.get('data') if isinstance(data, dict) else data
-        if not html_str:
-            return
-        events = parse_investing_html(html_str)
-        for ev in events:
-            actual = ev.get('actual')
-            if not actual:
-                continue
-            event_id = f"{today_str}_{ev['time']}_{ev['currency']}_{ev['event']}"
-            if event_id in notified_events:
-                continue
-            notified_events.add(event_id)
-
-            msg_lines = [
-                "📅 **Результат важного события (Investing.com ★★★)**",
-                f"🕒 {ev['time']} МСК",
-                f"💱 {ev['currency']} | {ev['event']}",
-                f"📊 Прогноз: {ev['forecast'] if ev['forecast'] else '—'}",
-                f"📌 Предыдущее: {ev['previous'] if ev['previous'] else '—'}",
-                f"✅ Факт: {actual}"
-            ]
-
-            if GIGACHAT_AUTH_KEY:
-                prompt = (
-                    f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
-                    f"Событие: {ev['event']}\n"
-                    f"Валюта: {ev['currency']}\n"
-                    f"Прогноз: {ev['forecast']}\n"
-                    f"Предыдущее: {ev['previous']}\n"
-                    f"Фактическое значение: {actual}\n\n"
-                    "Опиши кратко на русском языке (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
-                    "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
-                )
-                impact = await ask_gigachat(prompt)
-                if impact:
-                    msg_lines.append(f"\n🧠 **Влияние на рынок:**\n{impact}")
-
-            full_msg = "\n".join(msg_lines)
-            logger.info(f"📢 Отправка результата события: {event_id}")
-            await send_to_chat(context, full_msg)
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
+    return
 
 # ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
@@ -1184,7 +1010,7 @@ async def send_morning_report(context=None):
         msg += "\n📅 **Важные события (Investing.com ★★★):**\n"
         msg += investing_events + "\n"
     else:
-        msg += "\n📅 Важных событий (Investing.com ★★★) на сегодня нет.\n"
+        msg += "\n📅 Investing.com временно недоступен.\n"
 
     await send_to_chat(context, msg)
     logger.info("✅ Утренний обзор отправлен")
@@ -1208,7 +1034,6 @@ async def start_scheduler(app):
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=3600, first=30)
-    job_queue.run_repeating(check_investing_events_and_notify, interval=600, first=120)
     logger.info("📅 Планировщик запущен")
 
 async def daily_report_job(context):
