@@ -345,26 +345,6 @@ def get_technical_passport(asset_name, tf, signal, price,
                 lines.append(f"Объём: {ratio:.1f}x от среднего ({desc})")
         except: pass
 
-    if tf in ["1m", "5m"]:
-        try:
-            symbol = ASSETS[asset_name]["symbol"]
-            df = get_klines(symbol, tf, limit=5)
-            if df is not None and len(df) >= 2:
-                last = df.iloc[-1]; prev = df.iloc[-2]
-                body = abs(last['Close'] - last['Open'])
-                upper_shadow = last['High'] - max(last['Close'], last['Open'])
-                lower_shadow = min(last['Close'], last['Open']) - last['Low']
-                total_range = last['High'] - last['Low'] if last['High'] != last['Low'] else 0.0001
-                if (lower_shadow > 2*body and upper_shadow < body) or (upper_shadow > 2*body and lower_shadow < body):
-                    lines.append("Свечной паттерн: пинбар")
-                elif (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and
-                      last['Close'] > prev['Open'] and last['Open'] < prev['Close']):
-                    lines.append("Свечной паттерн: бычье поглощение")
-                elif (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and
-                      last['Open'] > prev['Close'] and last['Close'] < prev['Open']):
-                    lines.append("Свечной паттерн: медвежье поглощение")
-        except: pass
-
     return "\n".join(lines) if lines else "Технический паспорт недоступен"
 
 # ---------- AI анализ сигналов ----------
@@ -523,6 +503,8 @@ def calculate_atr_levels(price, atr, signal_type, tf, custom_mult=None):
         tp1 = price - atr * mult["TP1"]
         tp2 = price - atr * mult["TP2"]
         tp3 = price - atr * mult.get("TP3", 0)
+    if tf == "1m" or mult.get("TP3", 0) == 0:
+        tp3 = 0
     return {'price': round(price,2), 'sl': round(sl,2), 'tp1': round(tp1,2),
             'tp2': round(tp2,2), 'tp3': round(tp3,2) if tp3 != 0 else 0, 'atr': round(atr,2)}
 
@@ -601,7 +583,7 @@ async def check_signal_levels(bot, signal_dict):
                            f"⏱ Время сделки: {minutes:.1f} мин.")
                     await send_to_chat(FakeContext(bot), msg)
                     logger.info(f"✅ TP2 для {asset_name} {signal_dict['tf']}")
-            if not signal_dict['tp3_hit'] and not signal_dict['closed'] and levels.get('tp3', 0) != 0:
+            if signal_dict['tf'] != "1m" and not signal_dict['tp3_hit'] and not signal_dict['closed'] and levels.get('tp3', 0) != 0:
                 tp3_hit = (is_buy and price >= levels['tp3']) or (not is_buy and price <= levels['tp3'])
                 if tp3_hit:
                     signal_dict['tp3_hit'] = True
@@ -634,6 +616,11 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
                             higher_trend=None, context=None, simple_message=False, range_entry=None):
     if has_open_signal(asset_name, tf, signal_type, signal): return
     levels = calculate_atr_levels(price, atr, signal, tf)
+
+    # Фильтр минимального расстояния до TP1 (только для 1m)
+    if tf == "1m" and abs(levels['tp1'] - price) < 2.0:
+        logger.info(f"ℹ️ GOLD 1m сигнал пропущен: TP1 слишком близко (разница {abs(levels['tp1']-price):.2f})")
+        return
 
     ai_analysis = await get_ai_analysis(
         asset_name, signal_type, signal, price, rsi,
@@ -702,7 +689,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 vwap = (typical_price * df_vol['Volume']).sum() / df_vol['Volume'].sum()
                             else: vwap = price
 
-                    # Снижен порог объёма до 0.5 для всех
                     vol_threshold = 0.5
                     if volume_now is not None and avg_volume is not None and avg_volume > 0:
                         if volume_now < avg_volume * vol_threshold:
@@ -771,10 +757,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                     if fast_cross_1m:
                         atr_1m = get_atr_value(symbol, "1m")
                         if atr_1m is None: continue
-                        # Минимальная волатильность снижена до 0.01%
-                        if atr_1m < price * 0.0001:
-                            logger.info(f"ℹ️ GOLD 1m FAST_EMA пропущен: низкая волатильность (ATR {atr_1m:.2f})")
-                            continue
 
                         ema50_1m = get_ema_value(symbol, "1m", 50)
                         if ema50_1m is not None:
@@ -783,18 +765,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 continue
                             if fast_cross_1m == "SELL" and price >= ema50_1m:
                                 logger.info(f"ℹ️ GOLD 1m FAST_EMA SELL пропущен: цена выше EMA50")
-                                continue
-
-                        df_1m = get_klines(symbol, "1m", limit=5)
-                        if df_1m is not None and len(df_1m) >= 2:
-                            prev_high = df_1m['High'].iloc[-2]
-                            prev_low = df_1m['Low'].iloc[-2]
-                            current_close = df_1m['Close'].iloc[-1]
-                            if fast_cross_1m == "BUY" and current_close <= prev_high:
-                                logger.info(f"ℹ️ GOLD 1m FAST_EMA BUY пропущен: закрытие не выше предыдущего High")
-                                continue
-                            if fast_cross_1m == "SELL" and current_close >= prev_low:
-                                logger.info(f"ℹ️ GOLD 1m FAST_EMA SELL пропущен: закрытие не ниже предыдущего Low")
                                 continue
 
                         current_atr, avg_atr14 = get_atr_stats(symbol, "1m")
@@ -954,31 +924,210 @@ async def send_to_chat(context, text):
 async def channel_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global SEND_TO_CHANNEL
     SEND_TO_CHANNEL = True
+    logger.info("✅ Отправка в канал включена пользователем")
     await update.message.reply_text("✅ Отправка в канал включена.")
 
 async def channel_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global SEND_TO_CHANNEL
     SEND_TO_CHANNEL = False
+    logger.info("⏸️ Отправка в канал приостановлена пользователем")
     await update.message.reply_text("⏸️ Отправка в канал приостановлена.")
 
 # ---------- Команды GOLD 1m ----------
 async def gold_1m_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ENABLE_GOLD_1M
     ENABLE_GOLD_1M = True
+    logger.info("✅ GOLD 1m включён пользователем")
     await update.message.reply_text("✅ GOLD 1m включён. Сигналы FAST_EMA по тренду 5m.")
 
 async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ENABLE_GOLD_1M
     ENABLE_GOLD_1M = False
+    logger.info("⏸️ GOLD 1m выключен пользователем")
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (заглушка) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (восстановлен) ----------
+INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
+INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
+INVESTING_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "X-Requested-With": "XMLHttpRequest",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Referer": "https://www.investing.com/economic-calendar/",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+def get_investing_session():
+    """Создаёт сессию с куками после захода на страницу календаря."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": INVESTING_HEADERS["User-Agent"],
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": INVESTING_HEADERS["Accept-Language"],
+    })
+    try:
+        session.get(INVESTING_CALENDAR_URL, timeout=10)
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось получить сессию Investing: {e}")
+    return session
+
+def _convert_to_24h_and_shift(time_str: str) -> str:
+    if not time_str:
+        return time_str
+    time_str = time_str.strip()
+    match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_str, re.IGNORECASE)
+    if match:
+        hour = int(match.group(1))
+        minute = match.group(2)
+        ampm = match.group(3).upper()
+        if ampm == 'PM' and hour != 12:
+            hour += 12
+        elif ampm == 'AM' and hour == 12:
+            hour = 0
+        hour24 = hour
+    else:
+        parts = time_str.split(':')
+        try:
+            hour24 = int(parts[0])
+            minute = parts[1]
+        except (ValueError, IndexError):
+            return time_str
+        else:
+            minute = parts[1]
+
+    shifted_hour = (hour24 + 13) % 24
+    return f"{shifted_hour:02d}:{minute}"
+
+def parse_investing_html(html_string):
+    soup = BeautifulSoup(html_string, 'html.parser')
+    events = []
+    for row in soup.find_all('tr', id=lambda x: x and x.startswith('eventRowId_')):
+        try:
+            cols = row.find_all('td')
+            if len(cols) < 8:
+                continue
+            raw_time = cols[0].get_text(strip=True)
+            time_24 = _convert_to_24h_and_shift(raw_time)
+            currency = cols[1].get_text(strip=True)
+            name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
+            if not name:
+                name = cols[2].get_text(strip=True)
+            actual = cols[4].get_text(strip=True) if len(cols) > 4 else ''
+            forecast = cols[5].get_text(strip=True) if len(cols) > 5 else ''
+            previous = cols[6].get_text(strip=True) if len(cols) > 6 else ''
+
+            events.append({
+                'time': time_24,
+                'currency': currency,
+                'event': name,
+                'actual': actual if actual != '' else None,
+                'forecast': forecast,
+                'previous': previous
+            })
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка парсинга строки Investing: {e}")
+    return events
+
 def get_investing_high_impact_events():
-    logger.warning("⚠️ Investing.com недоступен (403). Важные события не загружены.")
-    return None
+    try:
+        today_str = get_moscow_time().strftime("%Y-%m-%d")
+        payload = {
+            "dateFrom": today_str,
+            "dateTo": today_str,
+            "importance[]": "3",
+            "timeZone": "3",
+            "currentTab": "custom",
+        }
+        session = get_investing_session()
+        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        if not resp.ok:
+            logger.error(f"📅 Investing.com статус: {resp.status_code}")
+            return None
+        data = resp.json()
+        html_str = data.get('data') if isinstance(data, dict) else data
+        if not html_str or not isinstance(html_str, str):
+            logger.info("📅 Investing.com: пустой HTML")
+            return None
+
+        events = parse_investing_html(html_str)
+        if not events:
+            logger.info(f"📅 Investing.com: не найдено событий ★★★ на {today_str}")
+            return None
+
+        lines = []
+        for ev in events:
+            line = f"🕒 {ev['time']} | {ev['currency']} | {ev['event']}"
+            if ev['forecast']:
+                line += f" | Прогноз: {ev['forecast']}"
+            if ev['previous']:
+                line += f" | Предыдущее: {ev['previous']}"
+            lines.append(line)
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
+        return None
+
+notified_events = set()
 
 async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
-    return
+    global notified_events
+    try:
+        today_str = get_moscow_time().strftime("%Y-%m-%d")
+        payload = {
+            "dateFrom": today_str,
+            "dateTo": today_str,
+            "importance[]": "3",
+            "timeZone": "3",
+            "currentTab": "custom",
+        }
+        session = get_investing_session()
+        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        html_str = data.get('data') if isinstance(data, dict) else data
+        if not html_str:
+            return
+        events = parse_investing_html(html_str)
+        for ev in events:
+            actual = ev.get('actual')
+            if not actual:
+                continue
+            event_id = f"{today_str}_{ev['time']}_{ev['currency']}_{ev['event']}"
+            if event_id in notified_events:
+                continue
+            notified_events.add(event_id)
+
+            msg_lines = [
+                "📅 **Результат важного события (Investing.com ★★★)**",
+                f"🕒 {ev['time']} МСК",
+                f"💱 {ev['currency']} | {ev['event']}",
+                f"📊 Прогноз: {ev['forecast'] if ev['forecast'] else '—'}",
+                f"📌 Предыдущее: {ev['previous'] if ev['previous'] else '—'}",
+                f"✅ Факт: {actual}"
+            ]
+
+            if GIGACHAT_AUTH_KEY:
+                prompt = (
+                    f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
+                    f"Событие: {ev['event']}\n"
+                    f"Валюта: {ev['currency']}\n"
+                    f"Прогноз: {ev['forecast']}\n"
+                    f"Предыдущее: {ev['previous']}\n"
+                    f"Фактическое значение: {actual}\n\n"
+                    "Опиши кратко на русском языке (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
+                    "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
+                )
+                impact = await ask_gigachat(prompt)
+                if impact:
+                    msg_lines.append(f"\n🧠 **Влияние на рынок:**\n{impact}")
+
+            full_msg = "\n".join(msg_lines)
+            logger.info(f"📢 Отправка результата события: {event_id}")
+            await send_to_chat(context, full_msg)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
 
 # ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
@@ -1034,6 +1183,7 @@ async def start_scheduler(app):
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=3600, first=30)
+    job_queue.run_repeating(check_investing_events_and_notify, interval=600, first=120)
     logger.info("📅 Планировщик запущен")
 
 async def daily_report_job(context):
