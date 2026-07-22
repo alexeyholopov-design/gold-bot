@@ -8,3 +8,4 @@ pandas
 numpy
 urllib3
 beautifulsoup4
+cloudscraper
