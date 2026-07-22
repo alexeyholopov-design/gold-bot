@@ -11,6 +11,9 @@ import logging
 from bs4 import BeautifulSoup
 import re
 
+# ---------- cloudscraper для обхода Cloudflare ----------
+import cloudscraper
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------- Логирование ----------
@@ -617,7 +620,6 @@ async def handle_new_signal(asset_name, tf, signal_type, signal, price, rsi=None
     if has_open_signal(asset_name, tf, signal_type, signal): return
     levels = calculate_atr_levels(price, atr, signal, tf)
 
-    # Фильтр минимального расстояния до TP1 (только для 1m)
     if tf == "1m" and abs(levels['tp1'] - price) < 2.0:
         logger.info(f"ℹ️ GOLD 1m сигнал пропущен: TP1 слишком близко (разница {abs(levels['tp1']-price):.2f})")
         return
@@ -946,9 +948,10 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏸️ GOLD 1m выключен пользователем")
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (восстановлен) ----------
+# ---------- ПАРСИНГ ИНВЕСТИНГА (cloudscraper) ----------
 INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
 INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
+
 INVESTING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "X-Requested-With": "XMLHttpRequest",
@@ -958,19 +961,19 @@ INVESTING_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-def get_investing_session():
-    """Создаёт сессию с куками после захода на страницу календаря."""
-    session = requests.Session()
-    session.headers.update({
+def get_investing_scraper():
+    """Создаёт cloudscraper-сессию с куками после захода на страницу календаря."""
+    scraper = cloudscraper.create_scraper()
+    scraper.headers.update({
         "User-Agent": INVESTING_HEADERS["User-Agent"],
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": INVESTING_HEADERS["Accept-Language"],
     })
     try:
-        session.get(INVESTING_CALENDAR_URL, timeout=10)
+        scraper.get(INVESTING_CALENDAR_URL, timeout=10)
     except Exception as e:
-        logger.warning(f"⚠️ Не удалось получить сессию Investing: {e}")
-    return session
+        logger.warning(f"⚠️ Не удалось загрузить страницу Investing через cloudscraper: {e}")
+    return scraper
 
 def _convert_to_24h_and_shift(time_str: str) -> str:
     if not time_str:
@@ -1039,8 +1042,8 @@ def get_investing_high_impact_events():
             "timeZone": "3",
             "currentTab": "custom",
         }
-        session = get_investing_session()
-        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        scraper = get_investing_scraper()
+        resp = scraper.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         if not resp.ok:
             logger.error(f"📅 Investing.com статус: {resp.status_code}")
             return None
@@ -1081,8 +1084,8 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
             "timeZone": "3",
             "currentTab": "custom",
         }
-        session = get_investing_session()
-        resp = session.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
+        scraper = get_investing_scraper()
+        resp = scraper.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         html_str = data.get('data') if isinstance(data, dict) else data
