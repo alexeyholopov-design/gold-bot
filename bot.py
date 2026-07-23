@@ -331,31 +331,22 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
         return None
 
 # ---------- Рыночные данные ----------
-def get_fxstreet_gold_price():
-    """Парсит текущую цену золота с FXStreet XAU/USD."""
+def get_gold_api_price():
+    """Получает реальную цену золота XAU/USD через api.gold-api.com."""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        resp = requests.get("https://www.fxstreet.com/rates-charts/xauusd", headers=headers, timeout=10)
+        resp = requests.get("https://api.gold-api.com/price/XAU/USD", timeout=5)
         if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # Ищем элемент с ценой (обычно span с классом fxs_price)
-            price_elem = soup.select_one(".fxs_price")
-            if price_elem:
-                price_text = price_elem.get_text(strip=True).replace(",", "")
-                # Извлекаем число (может быть с десятичной точкой)
-                match = re.search(r'[\d,]+\.?\d*', price_text)
-                if match:
-                    return float(match.group().replace(",", ""))
+            data = resp.json()
+            if 'price' in data:
+                return float(data['price'])
     except Exception as e:
-        logger.warning(f"⚠️ Не удалось получить цену золота с FXStreet: {e}")
+        logger.warning(f"⚠️ Gold-API ошибка: {e}")
     return None
 
 def get_current_price(symbol):
     if symbol == "XAU/USD":
-        # 1. Пробуем FXStreet
-        price = get_fxstreet_gold_price()
+        # 1. Gold API (реальная спотовая цена)
+        price = get_gold_api_price()
         if price is not None:
             return price
         # 2. Резерв – токен XAUT-USDT через BingX
@@ -382,7 +373,7 @@ def get_current_price(symbol):
         except: return None
 
 def get_klines(symbol, interval, limit=100):
-    # Для золота используем токен XAUT-USDT для свечей (т.к. FXStreet не даёт историю)
+    # Для золота используем токен XAUT-USDT для свечей (т.к. Gold API не даёт историю)
     if symbol == "XAU/USD":
         symbol = "XAUT-USDT"
     try:
@@ -509,7 +500,7 @@ def add_active_signal(asset_name, tf, signal_dict):
     if tf not in active_signals[asset_name]: active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней ----------
+# ---------- Проверка уровней (исправлена логика TP2 для 1m) ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']: return
@@ -1149,7 +1140,7 @@ def run_bot():
     logger.info("📋 Конфигурация таймфреймов:")
     for asset, tfs in ASSET_TIMEFRAMES.items():
         logger.info(f"  {asset}: {tfs}")
-    logger.info("ℹ️ GOLD источник: FXStreet + BingX (резерв)")
+    logger.info("ℹ️ GOLD источник: Gold-API + BingX (резерв)")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
