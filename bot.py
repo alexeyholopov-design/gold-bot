@@ -70,9 +70,9 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
-GOLD_SYMBOL = "XAUT-USDT"
+# Символ золота больше не нужен – получаем цену через API
 ASSETS = {
-    "GOLD": {"symbol": GOLD_SYMBOL, "tag": "#XAU"},
+    "GOLD": {"symbol": "XAU/USD", "tag": "#XAU"},
     "BTC":  {"symbol": "BTC-USDT", "tag": "#BTC"},
     "ETH":  {"symbol": "ETH-USDT", "tag": "#ETH"},
     "SOL":  {"symbol": "SOL-USDT", "tag": "#SOL"},
@@ -105,58 +105,11 @@ def safe_format(value, format_spec=":.2f"):
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
 
-# ---------- Bybit TradFi ----------
-def bybit_sign_request(params):
-    timestamp = str(int(time.time() * 1000))
-    recv_window = "5000"
-    param_str = urllib.parse.urlencode(sorted(params.items()))
-    sign_str = f"{timestamp}{BYBIT_API_KEY}{recv_window}{param_str}"
-    signature = hmac.new(bytes(BYBIT_API_SECRET, "utf-8"), bytes(sign_str, "utf-8"), hashlib.sha256).hexdigest()
-    return {
-        "X-BAPI-API-KEY": BYBIT_API_KEY,
-        "X-BAPI-TIMESTAMP": timestamp,
-        "X-BAPI-SIGN": signature,
-        "X-BAPI-RECV-WINDOW": recv_window,
-    }
-
+# ---------- Bybit TradFi (больше не используется) ----------
 def check_bybit_tradfi():
-    global GOLD_SYMBOL
-    if not BYBIT_API_KEY or not BYBIT_API_SECRET:
-        logger.warning("⚠️ Ключи Bybit не заданы, GOLD будет работать через BingX")
-        return False
-    try:
-        params = {"category": "tradfi", "symbol": "XAUUSDT+"}
-        headers = bybit_sign_request(params)
-        url = "https://api.bybit.com/v5/market/tickers"
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        if resp.status_code == 403:
-            logger.error("❌ Bybit заблокировал запрос (403). TradFi недоступен.")
-            return False
-        data = resp.json()
-        if data.get("retCode") == 0 and data.get("result", {}).get("list"):
-            price = float(data["result"]["list"][0]["lastPrice"])
-            logger.info(f"✅ Доступ к Bybit TradFi подтверждён. Цена XAUUSDT+: ${price:.2f}")
-            GOLD_SYMBOL = "XAUUSDT+"
-            ASSETS["GOLD"]["symbol"] = GOLD_SYMBOL
-            return True
-        else:
-            logger.error(f"❌ Bybit вернул ошибку: {data.get('retMsg', 'Unknown error')}")
-            return False
-    except Exception as e:
-        logger.error(f"❌ Исключение при проверке Bybit TradFi: {e}")
-        return False
+    return False
 
 def get_bybit_price(symbol):
-    try:
-        params = {"category": "tradfi", "symbol": symbol}
-        headers = bybit_sign_request(params)
-        url = "https://api.bybit.com/v5/market/tickers"
-        resp = requests.get(url, params=params, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("retCode") == 0:
-                return float(data["result"]["list"][0]["lastPrice"])
-    except: pass
     return None
 
 # ---------- GigaChat ----------
@@ -390,19 +343,45 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
 
 # ---------- Рыночные данные ----------
 def get_current_price(symbol):
-    if GOLD_SYMBOL == "XAUUSDT+" and symbol == "XAUUSDT+":
-        return get_bybit_price(symbol)
-    try:
-        url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
-        params = {"symbol": symbol}
-        response = requests.get(url, params=params, timeout=5)
-        if response.status_code != 200: return None
-        data = response.json()
-        if data.get("code") == 0: return float(data["data"]["price"])
+    if symbol == "XAU/USD":
+        # Пытаемся получить цену из открытого API металлов
+        try:
+            resp = requests.get("https://api.metals.live/v1/spot/gold", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    return float(data[0].get("price", 0))
+                elif isinstance(data, dict):
+                    return float(data.get("price", 0))
+        except:
+            pass
+        # Резервный вариант – старая цена через BingX (токен XAUT-USDT)
+        try:
+            url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
+            params = {"symbol": "XAUT-USDT"}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("code") == 0:
+                    return float(data["data"]["price"])
+        except:
+            pass
         return None
-    except: return None
+    else:
+        try:
+            url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
+            params = {"symbol": symbol}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code != 200: return None
+            data = response.json()
+            if data.get("code") == 0: return float(data["data"]["price"])
+            return None
+        except: return None
 
 def get_klines(symbol, interval, limit=100):
+    # Для золота используем токен XAUT-USDT для свечей (т.к. API metals.live не даёт свечи)
+    if symbol == "XAU/USD":
+        symbol = "XAUT-USDT"
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -576,7 +555,6 @@ async def check_signal_levels(bot, signal_dict):
                 tp2_hit = (is_buy and price >= levels['tp2']) or (not is_buy and price <= levels['tp2'])
                 if tp2_hit:
                     signal_dict['tp2_hit'] = True
-                    # Для 1m всегда закрываем сделку на TP2
                     close_trade = (signal_dict['type'] != 'fast_ema') or (signal_dict['tf'] == '1m')
                     if close_trade:
                         signal_dict['closed'] = True
@@ -788,7 +766,6 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                                 range_from = min10
                                 range_to = price
                                 sl_candidate = round(min10 - atr_1m * 0.5, 2)
-                                # Защита: если SL оказался выше цены или равен ей, используем стандартный SL
                                 if sl_candidate >= price:
                                     sl_candidate = round(price - atr_1m * mult["SL"], 2)
                                     logger.warning(f"⚠️ Исправлен SL для BUY 1m на стандартный: {sl_candidate}")
@@ -959,232 +936,12 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏸️ GOLD 1m выключен пользователем")
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ FXSTREET (HTML) ----------
-FXSTREET_CALENDAR_URL = "https://www.fxstreet.com/economic-calendar"
-
-def get_fxstreet_high_impact_events():
-    """
-    Парсит HTML-страницу экономического календаря FXStreet, находит события
-    с высокой важностью (High impact) и возвращает строку для утреннего обзора.
-    """
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(FXSTREET_CALENDAR_URL, headers=headers, timeout=10)
-        if not resp.ok:
-            logger.error(f"📅 FXStreet статус: {resp.status_code}")
-            return None
-        soup = BeautifulSoup(resp.text, 'html.parser')
-
-        # Ищем все строки с классом, содержащим "fxs_eventRow"
-        rows = soup.select("tr[class*='fxs_eventRow']")
-        if not rows:
-            logger.warning("📅 FXStreet: строки событий не найдены")
-            return None
-
-        today = get_moscow_time()
-        today_str = today.strftime("%Y-%m-%d")
-        lines = []
-
-        for row in rows:
-            # Определяем важность. Внутри строки есть ячейка с классом "fxs_event_impact"
-            impact_cell = row.select_one(".fxs_event_impact")
-            if not impact_cell:
-                continue
-            # Ищем внутри span с классом "high", "medium", "low"
-            impact_span = impact_cell.select_one("span[class*='high']")
-            if not impact_span:
-                continue   # пропускаем события не High
-
-            # Дата. В FXStreet дата указана в родительском элементе (обычно <tr> имеет data-date)
-            # Но проще найти заголовок дня (элемент с классом fxs_calendarDay) и ассоциировать строки.
-            # Так как страница динамическая, но в статическом HTML дата может быть в предыдущем элементе.
-            # Мы пойдем другим путём: извлечём время из ячейки времени, а дату возьмём из атрибута data-date строки.
-            date_str = row.get("data-date", "")
-            if not date_str:
-                # Если нет атрибута, попробуем найти в предыдущем элементе с классом fxs_calendarDay
-                prev_day = row.find_previous("tr", class_="fxs_calendarDay")
-                if prev_day:
-                    date_str = prev_day.get_text(strip=True)
-                else:
-                    date_str = today_str   # fallback на сегодня
-
-            # Парсим дату (формат может быть "Jul 23, 2026")
-            try:
-                # Очистим от лишних пробелов
-                date_str = date_str.strip()
-                # Пропускаем, если не содержит год
-                if not re.search(r'\d{4}', date_str):
-                    continue
-                event_date = datetime.strptime(date_str, "%b %d, %Y")
-                # Приводим к МСК (устанавливаем полночь)
-                event_date_msk = event_date.replace(tzinfo=MSK)
-                # Сравниваем с сегодняшней датой (без времени)
-                if event_date_msk.date() != today.date():
-                    continue   # показываем только сегодняшние события
-            except:
-                # Если не смогли распарсить, считаем сегодняшним
-                event_date_msk = today.replace(hour=0, minute=0, second=0, microsecond=0)
-
-            # Время
-            time_cell = row.select_one(".fxs_event_time")
-            if not time_cell:
-                continue
-            time_text = time_cell.get_text(strip=True)   # например "5:30 AM" или "4:15 PM"
-
-            # Конвертируем время в 24-часовой формат МСК (UTC+3)
-            try:
-                # Используем парсинг с AM/PM
-                match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_text, re.IGNORECASE)
-                if match:
-                    hour = int(match.group(1))
-                    minute = match.group(2)
-                    ampm = match.group(3).upper()
-                    if ampm == 'PM' and hour != 12:
-                        hour += 12
-                    elif ampm == 'AM' and hour == 12:
-                        hour = 0
-                    # Добавляем 3 часа для МСК
-                    hour = (hour + 3) % 24
-                    time_display = f"{hour:02d}:{minute}"
-                else:
-                    time_display = time_text   # fallback
-            except:
-                time_display = time_text
-
-            # Валюта
-            currency_cell = row.select_one(".fxs_event_currency")
-            currency = currency_cell.get_text(strip=True) if currency_cell else ""
-
-            # Название события
-            event_cell = row.select_one(".fxs_event_event")
-            event_name = event_cell.get_text(strip=True) if event_cell else ""
-
-            # Прогноз, предыдущее, факт
-            forecast_cell = row.select_one(".fxs_event_forecast")
-            previous_cell = row.select_one(".fxs_event_previous")
-            actual_cell = row.select_one(".fxs_event_actual")
-
-            forecast = forecast_cell.get_text(strip=True) if forecast_cell else ""
-            previous = previous_cell.get_text(strip=True) if previous_cell else ""
-            actual = actual_cell.get_text(strip=True) if actual_cell else ""
-
-            # Если событие уже прошло и есть actual, можно это как-то отметить
-            # Но для обзора достаточно прогноза и предыдущего
-
-            line = f"🕒 {time_display} | {currency} | {event_name}"
-            if forecast:
-                line += f" | Прогноз: {forecast}"
-            if previous:
-                line += f" | Предыдущее: {previous}"
-            lines.append(line)
-
-        return "\n".join(lines) if lines else None
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения календаря FXStreet: {e}")
-        return None
-
+# ---------- Заглушка для экономических событий ----------
 def get_investing_high_impact_events():
-    """Перенаправляем на парсер FXStreet."""
-    return get_fxstreet_high_impact_events()
+    return None
 
 async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Проверяет фактические значения событий на FXStreet и отправляет уведомления.
-    """
-    global notified_events
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(FXSTREET_CALENDAR_URL, headers=headers, timeout=10)
-        if not resp.ok:
-            return
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.select("tr[class*='fxs_eventRow']")
-        if not rows:
-            return
-        today_str = get_moscow_time().strftime("%Y-%m-%d")
-
-        for row in rows:
-            impact_cell = row.select_one(".fxs_event_impact")
-            if not impact_cell:
-                continue
-            impact_span = impact_cell.select_one("span[class*='high']")
-            if not impact_span:
-                continue
-
-            actual_cell = row.select_one(".fxs_event_actual")
-            actual = actual_cell.get_text(strip=True) if actual_cell else ""
-            if not actual:
-                continue   # ещё нет факта
-
-            # Собираем данные
-            date_str = row.get("data-date", "")
-            time_cell = row.select_one(".fxs_event_time")
-            time_text = time_cell.get_text(strip=True) if time_cell else ""
-            time_display = "?"
-            if time_text:
-                match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_text, re.IGNORECASE)
-                if match:
-                    hour = int(match.group(1))
-                    minute = match.group(2)
-                    ampm = match.group(3).upper()
-                    if ampm == 'PM' and hour != 12:
-                        hour += 12
-                    elif ampm == 'AM' and hour == 12:
-                        hour = 0
-                    hour = (hour + 3) % 24
-                    time_display = f"{hour:02d}:{minute}"
-
-            currency_cell = row.select_one(".fxs_event_currency")
-            currency = currency_cell.get_text(strip=True) if currency_cell else ""
-
-            event_cell = row.select_one(".fxs_event_event")
-            event_name = event_cell.get_text(strip=True) if event_cell else ""
-
-            forecast_cell = row.select_one(".fxs_event_forecast")
-            previous_cell = row.select_one(".fxs_event_previous")
-            forecast = forecast_cell.get_text(strip=True) if forecast_cell else ""
-            previous = previous_cell.get_text(strip=True) if previous_cell else ""
-
-            event_id = f"{today_str}_{time_display}_{currency}_{event_name}"
-            if event_id in notified_events:
-                continue
-            notified_events.add(event_id)
-
-            msg_lines = [
-                "📅 **Результат важного события (FXStreet ★★★)**",
-                f"🕒 {time_display} МСК",
-                f"💱 {currency} | {event_name}",
-                f"📊 Прогноз: {forecast if forecast else '—'}",
-                f"📌 Предыдущее: {previous if previous else '—'}",
-                f"✅ Факт: {actual}"
-            ]
-
-            if GIGACHAT_AUTH_KEY:
-                prompt = (
-                    f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
-                    f"Событие: {event_name}\n"
-                    f"Валюта: {currency}\n"
-                    f"Прогноз: {forecast}\n"
-                    f"Предыдущее: {previous}\n"
-                    f"Фактическое значение: {actual}\n\n"
-                    "Опиши кратко на русском языке (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
-                    "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
-                )
-                impact = await ask_gigachat(prompt)
-                if impact:
-                    msg_lines.append(f"\n🧠 **Влияние на рынок:**\n{impact}")
-
-            full_msg = "\n".join(msg_lines)
-            logger.info(f"📢 Отправка результата события: {event_id}")
-            await send_to_chat(context, full_msg)
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в check_investing_events_and_notify: {e}")
+    return
 
 # ---------- Утренний обзор ----------
 async def send_morning_report(context=None):
@@ -1211,12 +968,7 @@ async def send_morning_report(context=None):
         sentiment = news_sentiment.get(asset_name, "Нет данных")
         msg += f"**{asset_name}**: {sentiment}\n"
 
-    fxstreet_events = get_fxstreet_high_impact_events()
-    if fxstreet_events:
-        msg += "\n📅 **Важные события (FXStreet ★★★):**\n"
-        msg += fxstreet_events + "\n"
-    else:
-        msg += "\n📅 Важных событий на сегодня не найдено.\n"
+    msg += "\n📅 Важных событий на сегодня не найдено.\n"
 
     await send_to_chat(context, msg)
     logger.info("✅ Утренний обзор отправлен")
@@ -1240,7 +992,6 @@ async def start_scheduler(app):
                         time=dt_time(hour=18, minute=0, tzinfo=MSK), days=(6,))
     job_queue.run_daily(send_morning_report, time=dt_time(hour=10, minute=0, tzinfo=MSK), days=tuple(range(7)))
     job_queue.run_repeating(update_news_sentiment, interval=3600, first=30)
-    job_queue.run_repeating(check_investing_events_and_notify, interval=600, first=120)
     logger.info("📅 Планировщик запущен")
 
 async def daily_report_job(context):
@@ -1258,10 +1009,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global chat_id
     chat_id = update.effective_chat.id
     status_msg = "включена" if SEND_TO_CHANNEL else "приостановлена"
-    gold_source = "Bybit TradFi" if GOLD_SYMBOL == "XAUUSDT+" else "BingX (возможно расхождение ~$10)"
     await update.message.reply_text(
         "👋 Бот запущен!\n"
-        f"Отслеживаю: GOLD ({gold_source}), BTC, ETH, SOL.\n"
+        "Отслеживаю: GOLD (реальный рынок), BTC, ETH, SOL.\n"
         "Таймфреймы: GOLD (5м, 15м), крипта (15м, 1ч).\n"
         "⭐ FAST EMA | ⭐⭐ EMA | ⭐⭐⭐ Combined (RSI+EMA)\n"
         "📰 Новости каждый час. Утренний обзор в 10:00 МСК.\n"
@@ -1393,14 +1143,10 @@ def run_bot():
     else:
         logger.warning("⚠️ GigaChat AI отключён")
 
-    logger.info("🔑 Проверяю доступ к Bybit TradFi...")
-    result = check_bybit_tradfi()
-    logger.info(f"ℹ️ Результат проверки Bybit: {result}, GOLD_SYMBOL={GOLD_SYMBOL}")
-
     logger.info("📋 Конфигурация таймфреймов:")
     for asset, tfs in ASSET_TIMEFRAMES.items():
         logger.info(f"  {asset}: {tfs}")
-    logger.info(f"ℹ️ GOLD источник: {GOLD_SYMBOL}")
+    logger.info("ℹ️ GOLD источник: metals.live API + BingX (резерв)")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
