@@ -9,7 +9,6 @@ from collections import defaultdict
 import urllib3
 import logging
 from bs4 import BeautifulSoup
-import re
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -330,26 +329,77 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
         logger.error(f"❌ Ошибка AI: {e}")
         return None
 
-# ---------- Рыночные данные ----------
-def get_gold_api_price():
-    """Получает реальную цену золота XAU/USD через api.gold-api.com."""
+# ---------- Рыночные данные (FXStreet – свечи и цена из последней свечи) ----------
+FXSTREET_API = "https://www.fxstreet.com/api/v1/trpc/ratesCharts.getHistoricalBars"
+
+def get_fxstreet_klines(interval, limit=150):
+    """
+    Загружает свечи с FXStreet для указанного интервала.
+    Возвращает DataFrame с колонками Open, High, Low, Close, Volume.
+    """
+    period_map = {
+        "1m": "intraday1",
+        "5m": "intraday5",
+        "15m": "intraday15",
+        "1h": "intraday60",
+    }
+    period = period_map.get(interval)
+    if not period:
+        return None
+
+    # Рассчитываем временной диапазон (взять в 2 раза больше свечей, чтобы хватило)
+    now = datetime.now(timezone.utc)
+    # Определим множитель для минут в зависимости от интервала
+    minutes_period = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+    minutes = minutes_period.get(interval, 5) * (limit + 50)
+    from_time = now - timedelta(minutes=minutes)
+    to_time = now + timedelta(minutes=5)
+
+    payload = {
+        "priceProviderCode": "tts-170452990",
+        "period": period,
+        "from": from_time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "to": to_time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "take": limit + 30,
+        "timezone": "UTC",
+        "isCrypto": False
+    }
     try:
-        resp = requests.get("https://api.gold-api.com/price/XAU/USD", timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if 'price' in data:
-                return float(data['price'])
+        resp = requests.get(FXSTREET_API, params={"input": json.dumps({"0": {"json": payload}})}, timeout=10)
+        if resp.status_code != 200:
+            logger.warning(f"⚠️ FXStreet свечи статус: {resp.status_code}")
+            return None
+        data = resp.json()
+        bars = data[0]["result"]["data"]["json"]
+        if not bars:
+            return None
+        df = pd.DataFrame(bars)
+        df.rename(columns={
+            'open': 'Open', 'high': 'High', 'low': 'Low',
+            'close': 'Close', 'volume': 'Volume'
+        }, inplace=True)
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df.dropna(subset=["Open", "High", "Low", "Close"])
     except Exception as e:
-        logger.warning(f"⚠️ Gold-API ошибка: {e}")
+        logger.warning(f"⚠️ FXStreet свечи ошибка: {e}")
+        return None
+
+def get_fxstreet_gold_price():
+    """
+    Возвращает текущую цену золота как последнюю close свечи 1m.
+    """
+    df = get_fxstreet_klines("1m", limit=5)
+    if df is not None and len(df) > 0:
+        return float(df['Close'].iloc[-1])
     return None
 
 def get_current_price(symbol):
     if symbol == "XAU/USD":
-        # 1. Gold API (реальная спотовая цена)
-        price = get_gold_api_price()
+        price = get_fxstreet_gold_price()
         if price is not None:
             return price
-        # 2. Резерв – токен XAUT-USDT через BingX
+        # Резерв – BingX
         try:
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
             params = {"symbol": "XAUT-USDT"}
@@ -373,8 +423,11 @@ def get_current_price(symbol):
         except: return None
 
 def get_klines(symbol, interval, limit=100):
-    # Для золота используем токен XAUT-USDT для свечей (т.к. Gold API не даёт историю)
     if symbol == "XAU/USD":
+        df = get_fxstreet_klines(interval, limit)
+        if df is not None and len(df) >= 2:
+            return df
+        # fallback BingX
         symbol = "XAUT-USDT"
     try:
         url = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
@@ -500,7 +553,7 @@ def add_active_signal(asset_name, tf, signal_dict):
     if tf not in active_signals[asset_name]: active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней (исправлена логика TP2 для 1m) ----------
+# ---------- Проверка уровней ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']: return
@@ -1140,7 +1193,7 @@ def run_bot():
     logger.info("📋 Конфигурация таймфреймов:")
     for asset, tfs in ASSET_TIMEFRAMES.items():
         logger.info(f"  {asset}: {tfs}")
-    logger.info("ℹ️ GOLD источник: Gold-API + BingX (резерв)")
+    logger.info("ℹ️ GOLD источник: FXStreet (свечи + цена)")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
