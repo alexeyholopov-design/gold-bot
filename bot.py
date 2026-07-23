@@ -24,6 +24,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ⚠️ Скрываем токен бота в логах HTTP-запросов
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram.request").setLevel(logging.WARNING)
+
 # ---------- Конфигурация ----------
 TOKEN = os.environ.get('TOKEN')
 if not TOKEN:
@@ -955,159 +959,177 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏸️ GOLD 1m выключен пользователем")
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ ИНВЕСТИНГА (старая рабочая версия) ----------
-INVESTING_API_URL = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
-INVESTING_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "X-Requested-With": "XMLHttpRequest",
-    "Content-Type": "application/x-www-form-urlencoded",
-}
+# ---------- ПАРСИНГ FXSTREET (замена Investing.com) ----------
+FXSTREET_RSS_URL = "https://www.fxstreet.com/economic-calendar/rss"
 
-def _convert_to_24h_and_shift(time_str: str) -> str:
+def _fix_timezone_shift(time_str: str) -> str:
     """
-    Преобразует время из формата "HH:MM AM/PM" или "HH:MM" в 24-часовой "HH:MM".
-    Затем добавляет 13 часов (сдвиг часового пояса для МСК).
+    Приводит время из FXStreet (обычно в GMT) к МСК (UTC+3) в 24-часовом формате.
     """
     if not time_str:
-        return time_str
+        return "?"
     time_str = time_str.strip()
-    match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_str, re.IGNORECASE)
-    if match:
-        hour = int(match.group(1))
-        minute = match.group(2)
-        ampm = match.group(3).upper()
-        if ampm == 'PM' and hour != 12:
-            hour += 12
-        elif ampm == 'AM' and hour == 12:
-            hour = 0
-        hour24 = hour
-    else:
-        parts = time_str.split(':')
-        try:
-            hour24 = int(parts[0])
-            minute = parts[1]
-        except (ValueError, IndexError):
-            return time_str
-        else:
-            minute = parts[1]
-
-    shifted_hour = (hour24 + 13) % 24
-    return f"{shifted_hour:02d}:{minute}"
-
-def parse_investing_html(html_string):
-    soup = BeautifulSoup(html_string, 'html.parser')
-    events = []
-    for row in soup.find_all('tr', id=lambda x: x and x.startswith('eventRowId_')):
-        try:
-            cols = row.find_all('td')
-            if len(cols) < 8:
-                continue
-            raw_time = cols[0].get_text(strip=True)
-            time_24 = _convert_to_24h_and_shift(raw_time)
-            logger.info(f"🕒 Investing сырое время: '{raw_time}' -> {time_24}")
-            currency = cols[1].get_text(strip=True)
-            name = cols[3].get_text(strip=True) if cols[3].get_text(strip=True) else cols[2].get_text(strip=True)
-            if not name:
-                name = cols[2].get_text(strip=True)
-            actual = cols[4].get_text(strip=True) if len(cols) > 4 else ''
-            forecast = cols[5].get_text(strip=True) if len(cols) > 5 else ''
-            previous = cols[6].get_text(strip=True) if len(cols) > 6 else ''
-
-            events.append({
-                'time': time_24,
-                'currency': currency,
-                'event': name,
-                'actual': actual if actual != '' else None,
-                'forecast': forecast,
-                'previous': previous
-            })
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка парсинга строки Investing: {e}")
-    return events
-
-def get_investing_high_impact_events():
+    # Пытаемся распарсить "HH:MM" или "HH:MM AM/PM"
     try:
-        today_str = get_moscow_time().strftime("%Y-%m-%d")
-        payload = {
-            "dateFrom": today_str,
-            "dateTo": today_str,
-            "importance[]": "3",
-            "timeZone": "3",
-            "currentTab": "custom",
-        }
-        resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
-        if not resp.ok:
-            logger.error(f"📅 Investing.com статус: {resp.status_code}")
-            return None
-        data = resp.json()
-        html_str = data.get('data') if isinstance(data, dict) else data
-        if not html_str or not isinstance(html_str, str):
-            logger.info("📅 Investing.com: пустой HTML")
+        # Ищем AM/PM
+        match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)?', time_str, re.IGNORECASE)
+        if match:
+            hour = int(match.group(1))
+            minute = match.group(2)
+            ampm = match.group(3)
+            if ampm:
+                if ampm.upper() == 'PM' and hour != 12:
+                    hour += 12
+                elif ampm.upper() == 'AM' and hour == 12:
+                    hour = 0
+            # Прибавляем 3 часа к GMT -> МСК
+            hour = (hour + 3) % 24
+            return f"{hour:02d}:{minute}"
+    except:
+        pass
+    return time_str   # если не смогли распарсить, возвращаем как есть
+
+def get_fxstreet_high_impact_events():
+    """
+    Получает события высокой важности из RSS-ленты FXStreet.
+    Возвращает строку для утреннего обзора.
+    """
+    try:
+        feed = feedparser.parse(FXSTREET_RSS_URL)
+        if not feed.entries:
+            logger.warning("📅 FXStreet RSS пуст")
             return None
 
-        events = parse_investing_html(html_str)
-        if not events:
-            logger.info(f"📅 Investing.com: не найдено событий ★★★ на {today_str}")
-            return None
+        today = get_moscow_time()
+        today_midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
 
         lines = []
-        for ev in events:
-            line = f"🕒 {ev['time']} | {ev['currency']} | {ev['event']}"
-            if ev['forecast']:
-                line += f" | Прогноз: {ev['forecast']}"
-            if ev['previous']:
-                line += f" | Предыдущее: {ev['previous']}"
+        for entry in feed.entries:
+            # Проверяем важность: в RSS FXStreet есть поле <fxst:impact>High</fxst:impact>
+            # Оно доступно через entry.get("fxst_impact") или через tags
+            impact = None
+            for tag in entry.get("tags", []):
+                if tag.get("term", "") == "High":
+                    impact = "high"
+                    break
+            if not impact:
+                continue
+
+            # Дата и время
+            # В FXStreet дата и время хранятся в <published> или отдельных полях
+            # Используем published для парсинга
+            published = entry.get("published", "")
+            event_time = None
+            if published:
+                try:
+                    # Парсим ISO-формат даты
+                    event_time = datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ")
+                    event_time = event_time.replace(tzinfo=timezone.utc)
+                    # Переводим в МСК (UTC+3)
+                    event_time_msk = event_time + timedelta(hours=3)
+                except:
+                    event_time_msk = None
+            else:
+                event_time_msk = None
+
+            # Проверяем, что событие сегодня или позже (можно показывать прошедшие, но это ок)
+            # Показываем все high события, но для утреннего обзора можно фильтровать
+            # Мы покажем все события на сегодня, которые ещё не прошли? Оставим все high на текущий день
+            if event_time_msk and event_time_msk.date() != today.date():
+                continue   # пропускаем события не на сегодня
+
+            # Название события
+            title = entry.get("title", "")
+            # Убираем из названия валюту и время, если они есть
+            # Обычно формат: "USD - Initial Jobless Claims"
+            # Можно оставить как есть
+            event_name = title
+
+            # Валюта
+            currency = entry.get("fxst_currency", "") if hasattr(entry, 'fxst_currency') else ""
+            if not currency:
+                # Попробуем извлечь из названия первые три буквы
+                match = re.match(r'([A-Z]{3})\s*-\s*', title)
+                if match:
+                    currency = match.group(1)
+
+            # Прогноз и предыдущее значение
+            forecast = entry.get("fxst_forecast", "")
+            previous = entry.get("fxst_previous", "")
+            actual = entry.get("fxst_actual", "")
+
+            time_display = _fix_timezone_shift(entry.get("fxst_time", "")) if hasattr(entry, 'fxst_time') else "?"
+
+            line = f"🕒 {time_display} | {currency} | {event_name}"
+            if forecast:
+                line += f" | Прогноз: {forecast}"
+            if previous:
+                line += f" | Предыдущее: {previous}"
             lines.append(line)
-        return "\n".join(lines)
+
+        return "\n".join(lines) if lines else None
+
     except Exception as e:
-        logger.error(f"❌ Ошибка получения календаря Investing.com: {e}")
+        logger.error(f"❌ Ошибка получения календаря FXStreet: {e}")
         return None
 
-notified_events = set()
+def get_investing_high_impact_events():
+    """Перенаправляет вызов на парсер FXStreet."""
+    return get_fxstreet_high_impact_events()
 
 async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Проверяет фактическое значение событий FXStreet и отправляет уведомления.
+    """
     global notified_events
     try:
-        today_str = get_moscow_time().strftime("%Y-%m-%d")
-        payload = {
-            "dateFrom": today_str,
-            "dateTo": today_str,
-            "importance[]": "3",
-            "timeZone": "3",
-            "currentTab": "custom",
-        }
-        resp = requests.post(INVESTING_API_URL, headers=INVESTING_HEADERS, data=payload, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        html_str = data.get('data') if isinstance(data, dict) else data
-        if not html_str:
+        feed = feedparser.parse(FXSTREET_RSS_URL)
+        if not feed.entries:
             return
-        events = parse_investing_html(html_str)
-        for ev in events:
-            actual = ev.get('actual')
+        today_str = get_moscow_time().strftime("%Y-%m-%d")
+        for entry in feed.entries:
+            # Фильтр по важности
+            impact = None
+            for tag in entry.get("tags", []):
+                if tag.get("term", "") == "High":
+                    impact = "high"
+                    break
+            if not impact:
+                continue
+
+            actual = entry.get("fxst_actual", "")
             if not actual:
                 continue
-            event_id = f"{today_str}_{ev['time']}_{ev['currency']}_{ev['event']}"
+
+            # Идентификатор события
+            title = entry.get("title", "")
+            currency = entry.get("fxst_currency", "") or (re.match(r'([A-Z]{3})\s*-\s*', title).group(1) if re.match(r'([A-Z]{3})\s*-\s*', title) else "USD")
+            forecast = entry.get("fxst_forecast", "")
+            previous = entry.get("fxst_previous", "")
+
+            # Время
+            time_display = _fix_timezone_shift(entry.get("fxst_time", ""))
+            event_id = f"{today_str}_{time_display}_{currency}_{title}"
             if event_id in notified_events:
                 continue
             notified_events.add(event_id)
 
             msg_lines = [
-                "📅 **Результат важного события (Investing.com ★★★)**",
-                f"🕒 {ev['time']} МСК",
-                f"💱 {ev['currency']} | {ev['event']}",
-                f"📊 Прогноз: {ev['forecast'] if ev['forecast'] else '—'}",
-                f"📌 Предыдущее: {ev['previous'] if ev['previous'] else '—'}",
+                "📅 **Результат важного события (FXStreet ★★★)**",
+                f"🕒 {time_display} МСК",
+                f"💱 {currency} | {title}",
+                f"📊 Прогноз: {forecast if forecast else '—'}",
+                f"📌 Предыдущее: {previous if previous else '—'}",
                 f"✅ Факт: {actual}"
             ]
 
             if GIGACHAT_AUTH_KEY:
                 prompt = (
                     f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
-                    f"Событие: {ev['event']}\n"
-                    f"Валюта: {ev['currency']}\n"
-                    f"Прогноз: {ev['forecast']}\n"
-                    f"Предыдущее: {ev['previous']}\n"
+                    f"Событие: {title}\n"
+                    f"Валюта: {currency}\n"
+                    f"Прогноз: {forecast}\n"
+                    f"Предыдущее: {previous}\n"
                     f"Фактическое значение: {actual}\n\n"
                     "Опиши кратко на русском языке (2-3 предложения): как это событие может повлиять на цену золота и криптовалюты в ближайшие часы. "
                     "Укажи, какие активы (GOLD, BTC, ETH, SOL) могут быть затронуты больше всего."
@@ -1148,12 +1170,12 @@ async def send_morning_report(context=None):
         sentiment = news_sentiment.get(asset_name, "Нет данных")
         msg += f"**{asset_name}**: {sentiment}\n"
 
-    investing_events = get_investing_high_impact_events()
-    if investing_events:
-        msg += "\n📅 **Важные события (Investing.com ★★★):**\n"
-        msg += investing_events + "\n"
+    fxstreet_events = get_fxstreet_high_impact_events()
+    if fxstreet_events:
+        msg += "\n📅 **Важные события (FXStreet ★★★):**\n"
+        msg += fxstreet_events + "\n"
     else:
-        msg += "\n📅 Важных событий (Investing.com ★★★) на сегодня нет.\n"
+        msg += "\n📅 Важных событий на сегодня не найдено.\n"
 
     await send_to_chat(context, msg)
     logger.info("✅ Утренний обзор отправлен")
