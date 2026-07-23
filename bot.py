@@ -959,106 +959,119 @@ async def gold_1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏸️ GOLD 1m выключен пользователем")
     await update.message.reply_text("⏸️ GOLD 1m выключен.")
 
-# ---------- ПАРСИНГ FXSTREET (замена Investing.com) ----------
-FXSTREET_RSS_URL = "https://www.fxstreet.com/economic-calendar/rss"
-
-def _fix_timezone_shift(time_str: str) -> str:
-    """
-    Приводит время из FXStreet (обычно в GMT) к МСК (UTC+3) в 24-часовом формате.
-    """
-    if not time_str:
-        return "?"
-    time_str = time_str.strip()
-    # Пытаемся распарсить "HH:MM" или "HH:MM AM/PM"
-    try:
-        # Ищем AM/PM
-        match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)?', time_str, re.IGNORECASE)
-        if match:
-            hour = int(match.group(1))
-            minute = match.group(2)
-            ampm = match.group(3)
-            if ampm:
-                if ampm.upper() == 'PM' and hour != 12:
-                    hour += 12
-                elif ampm.upper() == 'AM' and hour == 12:
-                    hour = 0
-            # Прибавляем 3 часа к GMT -> МСК
-            hour = (hour + 3) % 24
-            return f"{hour:02d}:{minute}"
-    except:
-        pass
-    return time_str   # если не смогли распарсить, возвращаем как есть
+# ---------- ПАРСИНГ FXSTREET (HTML) ----------
+FXSTREET_CALENDAR_URL = "https://www.fxstreet.com/economic-calendar"
 
 def get_fxstreet_high_impact_events():
     """
-    Получает события высокой важности из RSS-ленты FXStreet.
-    Возвращает строку для утреннего обзора.
+    Парсит HTML-страницу экономического календаря FXStreet, находит события
+    с высокой важностью (High impact) и возвращает строку для утреннего обзора.
     """
     try:
-        feed = feedparser.parse(FXSTREET_RSS_URL)
-        if not feed.entries:
-            logger.warning("📅 FXStreet RSS пуст")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(FXSTREET_CALENDAR_URL, headers=headers, timeout=10)
+        if not resp.ok:
+            logger.error(f"📅 FXStreet статус: {resp.status_code}")
+            return None
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # Ищем все строки с классом, содержащим "fxs_eventRow"
+        rows = soup.select("tr[class*='fxs_eventRow']")
+        if not rows:
+            logger.warning("📅 FXStreet: строки событий не найдены")
             return None
 
         today = get_moscow_time()
-        today_midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
-
+        today_str = today.strftime("%Y-%m-%d")
         lines = []
-        for entry in feed.entries:
-            # Проверяем важность: в RSS FXStreet есть поле <fxst:impact>High</fxst:impact>
-            # Оно доступно через entry.get("fxst_impact") или через tags
-            impact = None
-            for tag in entry.get("tags", []):
-                if tag.get("term", "") == "High":
-                    impact = "high"
-                    break
-            if not impact:
+
+        for row in rows:
+            # Определяем важность. Внутри строки есть ячейка с классом "fxs_event_impact"
+            impact_cell = row.select_one(".fxs_event_impact")
+            if not impact_cell:
                 continue
+            # Ищем внутри span с классом "high", "medium", "low"
+            impact_span = impact_cell.select_one("span[class*='high']")
+            if not impact_span:
+                continue   # пропускаем события не High
 
-            # Дата и время
-            # В FXStreet дата и время хранятся в <published> или отдельных полях
-            # Используем published для парсинга
-            published = entry.get("published", "")
-            event_time = None
-            if published:
-                try:
-                    # Парсим ISO-формат даты
-                    event_time = datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ")
-                    event_time = event_time.replace(tzinfo=timezone.utc)
-                    # Переводим в МСК (UTC+3)
-                    event_time_msk = event_time + timedelta(hours=3)
-                except:
-                    event_time_msk = None
-            else:
-                event_time_msk = None
+            # Дата. В FXStreet дата указана в родительском элементе (обычно <tr> имеет data-date)
+            # Но проще найти заголовок дня (элемент с классом fxs_calendarDay) и ассоциировать строки.
+            # Так как страница динамическая, но в статическом HTML дата может быть в предыдущем элементе.
+            # Мы пойдем другим путём: извлечём время из ячейки времени, а дату возьмём из атрибута data-date строки.
+            date_str = row.get("data-date", "")
+            if not date_str:
+                # Если нет атрибута, попробуем найти в предыдущем элементе с классом fxs_calendarDay
+                prev_day = row.find_previous("tr", class_="fxs_calendarDay")
+                if prev_day:
+                    date_str = prev_day.get_text(strip=True)
+                else:
+                    date_str = today_str   # fallback на сегодня
 
-            # Проверяем, что событие сегодня или позже (можно показывать прошедшие, но это ок)
-            # Показываем все high события, но для утреннего обзора можно фильтровать
-            # Мы покажем все события на сегодня, которые ещё не прошли? Оставим все high на текущий день
-            if event_time_msk and event_time_msk.date() != today.date():
-                continue   # пропускаем события не на сегодня
+            # Парсим дату (формат может быть "Jul 23, 2026")
+            try:
+                # Очистим от лишних пробелов
+                date_str = date_str.strip()
+                # Пропускаем, если не содержит год
+                if not re.search(r'\d{4}', date_str):
+                    continue
+                event_date = datetime.strptime(date_str, "%b %d, %Y")
+                # Приводим к МСК (устанавливаем полночь)
+                event_date_msk = event_date.replace(tzinfo=MSK)
+                # Сравниваем с сегодняшней датой (без времени)
+                if event_date_msk.date() != today.date():
+                    continue   # показываем только сегодняшние события
+            except:
+                # Если не смогли распарсить, считаем сегодняшним
+                event_date_msk = today.replace(hour=0, minute=0, second=0, microsecond=0)
 
-            # Название события
-            title = entry.get("title", "")
-            # Убираем из названия валюту и время, если они есть
-            # Обычно формат: "USD - Initial Jobless Claims"
-            # Можно оставить как есть
-            event_name = title
+            # Время
+            time_cell = row.select_one(".fxs_event_time")
+            if not time_cell:
+                continue
+            time_text = time_cell.get_text(strip=True)   # например "5:30 AM" или "4:15 PM"
+
+            # Конвертируем время в 24-часовой формат МСК (UTC+3)
+            try:
+                # Используем парсинг с AM/PM
+                match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_text, re.IGNORECASE)
+                if match:
+                    hour = int(match.group(1))
+                    minute = match.group(2)
+                    ampm = match.group(3).upper()
+                    if ampm == 'PM' and hour != 12:
+                        hour += 12
+                    elif ampm == 'AM' and hour == 12:
+                        hour = 0
+                    # Добавляем 3 часа для МСК
+                    hour = (hour + 3) % 24
+                    time_display = f"{hour:02d}:{minute}"
+                else:
+                    time_display = time_text   # fallback
+            except:
+                time_display = time_text
 
             # Валюта
-            currency = entry.get("fxst_currency", "") if hasattr(entry, 'fxst_currency') else ""
-            if not currency:
-                # Попробуем извлечь из названия первые три буквы
-                match = re.match(r'([A-Z]{3})\s*-\s*', title)
-                if match:
-                    currency = match.group(1)
+            currency_cell = row.select_one(".fxs_event_currency")
+            currency = currency_cell.get_text(strip=True) if currency_cell else ""
 
-            # Прогноз и предыдущее значение
-            forecast = entry.get("fxst_forecast", "")
-            previous = entry.get("fxst_previous", "")
-            actual = entry.get("fxst_actual", "")
+            # Название события
+            event_cell = row.select_one(".fxs_event_event")
+            event_name = event_cell.get_text(strip=True) if event_cell else ""
 
-            time_display = _fix_timezone_shift(entry.get("fxst_time", "")) if hasattr(entry, 'fxst_time') else "?"
+            # Прогноз, предыдущее, факт
+            forecast_cell = row.select_one(".fxs_event_forecast")
+            previous_cell = row.select_one(".fxs_event_previous")
+            actual_cell = row.select_one(".fxs_event_actual")
+
+            forecast = forecast_cell.get_text(strip=True) if forecast_cell else ""
+            previous = previous_cell.get_text(strip=True) if previous_cell else ""
+            actual = actual_cell.get_text(strip=True) if actual_cell else ""
+
+            # Если событие уже прошло и есть actual, можно это как-то отметить
+            # Но для обзора достаточно прогноза и предыдущего
 
             line = f"🕒 {time_display} | {currency} | {event_name}"
             if forecast:
@@ -1074,42 +1087,70 @@ def get_fxstreet_high_impact_events():
         return None
 
 def get_investing_high_impact_events():
-    """Перенаправляет вызов на парсер FXStreet."""
+    """Перенаправляем на парсер FXStreet."""
     return get_fxstreet_high_impact_events()
 
 async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
     """
-    Проверяет фактическое значение событий FXStreet и отправляет уведомления.
+    Проверяет фактические значения событий на FXStreet и отправляет уведомления.
     """
     global notified_events
     try:
-        feed = feedparser.parse(FXSTREET_RSS_URL)
-        if not feed.entries:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(FXSTREET_CALENDAR_URL, headers=headers, timeout=10)
+        if not resp.ok:
+            return
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        rows = soup.select("tr[class*='fxs_eventRow']")
+        if not rows:
             return
         today_str = get_moscow_time().strftime("%Y-%m-%d")
-        for entry in feed.entries:
-            # Фильтр по важности
-            impact = None
-            for tag in entry.get("tags", []):
-                if tag.get("term", "") == "High":
-                    impact = "high"
-                    break
-            if not impact:
+
+        for row in rows:
+            impact_cell = row.select_one(".fxs_event_impact")
+            if not impact_cell:
+                continue
+            impact_span = impact_cell.select_one("span[class*='high']")
+            if not impact_span:
                 continue
 
-            actual = entry.get("fxst_actual", "")
+            actual_cell = row.select_one(".fxs_event_actual")
+            actual = actual_cell.get_text(strip=True) if actual_cell else ""
             if not actual:
-                continue
+                continue   # ещё нет факта
 
-            # Идентификатор события
-            title = entry.get("title", "")
-            currency = entry.get("fxst_currency", "") or (re.match(r'([A-Z]{3})\s*-\s*', title).group(1) if re.match(r'([A-Z]{3})\s*-\s*', title) else "USD")
-            forecast = entry.get("fxst_forecast", "")
-            previous = entry.get("fxst_previous", "")
+            # Собираем данные
+            date_str = row.get("data-date", "")
+            time_cell = row.select_one(".fxs_event_time")
+            time_text = time_cell.get_text(strip=True) if time_cell else ""
+            time_display = "?"
+            if time_text:
+                match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)', time_text, re.IGNORECASE)
+                if match:
+                    hour = int(match.group(1))
+                    minute = match.group(2)
+                    ampm = match.group(3).upper()
+                    if ampm == 'PM' and hour != 12:
+                        hour += 12
+                    elif ampm == 'AM' and hour == 12:
+                        hour = 0
+                    hour = (hour + 3) % 24
+                    time_display = f"{hour:02d}:{minute}"
 
-            # Время
-            time_display = _fix_timezone_shift(entry.get("fxst_time", ""))
-            event_id = f"{today_str}_{time_display}_{currency}_{title}"
+            currency_cell = row.select_one(".fxs_event_currency")
+            currency = currency_cell.get_text(strip=True) if currency_cell else ""
+
+            event_cell = row.select_one(".fxs_event_event")
+            event_name = event_cell.get_text(strip=True) if event_cell else ""
+
+            forecast_cell = row.select_one(".fxs_event_forecast")
+            previous_cell = row.select_one(".fxs_event_previous")
+            forecast = forecast_cell.get_text(strip=True) if forecast_cell else ""
+            previous = previous_cell.get_text(strip=True) if previous_cell else ""
+
+            event_id = f"{today_str}_{time_display}_{currency}_{event_name}"
             if event_id in notified_events:
                 continue
             notified_events.add(event_id)
@@ -1117,7 +1158,7 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
             msg_lines = [
                 "📅 **Результат важного события (FXStreet ★★★)**",
                 f"🕒 {time_display} МСК",
-                f"💱 {currency} | {title}",
+                f"💱 {currency} | {event_name}",
                 f"📊 Прогноз: {forecast if forecast else '—'}",
                 f"📌 Предыдущее: {previous if previous else '—'}",
                 f"✅ Факт: {actual}"
@@ -1126,7 +1167,7 @@ async def check_investing_events_and_notify(context: ContextTypes.DEFAULT_TYPE):
             if GIGACHAT_AUTH_KEY:
                 prompt = (
                     f"Проанализируй влияние опубликованного экономического события на рынки золота и криптовалют.\n"
-                    f"Событие: {title}\n"
+                    f"Событие: {event_name}\n"
                     f"Валюта: {currency}\n"
                     f"Прогноз: {forecast}\n"
                     f"Предыдущее: {previous}\n"
