@@ -1,4 +1,4 @@
-import os, time, threading, random, asyncio, requests, json, uuid, feedparser, hmac, hashlib, urllib.parse
+import os, time, threading, random, asyncio, requests, json, uuid, feedparser
 import pandas as pd
 import numpy as np
 from flask import Flask
@@ -41,9 +41,6 @@ ENABLE_GOLD_1M = False
 GIGACHAT_AUTH_KEY = os.environ.get('GIGACHAT_AUTH_KEY')
 GIGACHAT_SCOPE = "GIGACHAT_API_PERS"
 
-BYBIT_API_KEY = os.environ.get('BYBIT_API_KEY', '')
-BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', '')
-
 MSK = timezone(timedelta(hours=3))
 
 app_flask = Flask(__name__)
@@ -70,7 +67,6 @@ ASSET_TIMEFRAMES = {
     "SOL":  ["15m", "1h"],
 }
 
-# Символ золота больше не нужен – получаем цену через API
 ASSETS = {
     "GOLD": {"symbol": "XAU/USD", "tag": "#XAU"},
     "BTC":  {"symbol": "BTC-USDT", "tag": "#BTC"},
@@ -104,13 +100,6 @@ def safe_format(value, format_spec=":.2f"):
 
 def get_signal_stars(signal_type):
     return {"rsi": "⭐⭐", "ema": "⭐⭐", "combined": "⭐⭐⭐", "fast_ema": "⭐"}.get(signal_type, "")
-
-# ---------- Bybit TradFi (больше не используется) ----------
-def check_bybit_tradfi():
-    return False
-
-def get_bybit_price(symbol):
-    return None
 
 # ---------- GigaChat ----------
 async def get_gigachat_token(force=False):
@@ -342,20 +331,34 @@ async def get_ai_analysis(asset_name, signal_type, signal, price, rsi, ema_fast=
         return None
 
 # ---------- Рыночные данные ----------
+def get_fxstreet_gold_price():
+    """Парсит текущую цену золота с FXStreet XAU/USD."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get("https://www.fxstreet.com/rates-charts/xauusd", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            # Ищем элемент с ценой (обычно span с классом fxs_price)
+            price_elem = soup.select_one(".fxs_price")
+            if price_elem:
+                price_text = price_elem.get_text(strip=True).replace(",", "")
+                # Извлекаем число (может быть с десятичной точкой)
+                match = re.search(r'[\d,]+\.?\d*', price_text)
+                if match:
+                    return float(match.group().replace(",", ""))
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось получить цену золота с FXStreet: {e}")
+    return None
+
 def get_current_price(symbol):
     if symbol == "XAU/USD":
-        # Пытаемся получить цену из открытого API металлов
-        try:
-            resp = requests.get("https://api.metals.live/v1/spot/gold", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    return float(data[0].get("price", 0))
-                elif isinstance(data, dict):
-                    return float(data.get("price", 0))
-        except:
-            pass
-        # Резервный вариант – старая цена через BingX (токен XAUT-USDT)
+        # 1. Пробуем FXStreet
+        price = get_fxstreet_gold_price()
+        if price is not None:
+            return price
+        # 2. Резерв – токен XAUT-USDT через BingX
         try:
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
             params = {"symbol": "XAUT-USDT"}
@@ -379,7 +382,7 @@ def get_current_price(symbol):
         except: return None
 
 def get_klines(symbol, interval, limit=100):
-    # Для золота используем токен XAUT-USDT для свечей (т.к. API metals.live не даёт свечи)
+    # Для золота используем токен XAUT-USDT для свечей (т.к. FXStreet не даёт историю)
     if symbol == "XAU/USD":
         symbol = "XAUT-USDT"
     try:
@@ -506,7 +509,7 @@ def add_active_signal(asset_name, tf, signal_dict):
     if tf not in active_signals[asset_name]: active_signals[asset_name][tf] = []
     active_signals[asset_name][tf].append(signal_dict)
 
-# ---------- Проверка уровней (исправлена логика TP2 для 1m) ----------
+# ---------- Проверка уровней ----------
 async def check_signal_levels(bot, signal_dict):
     levels = signal_dict['levels']
     if signal_dict['closed']: return
@@ -732,7 +735,7 @@ async def check_and_send_signal(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"❌ Ошибка в check_and_send_signal для {name} {tf}: {e}")
 
-            # === GOLD 1m FAST_EMA (с защитой SL) ===
+            # === GOLD 1m FAST_EMA ===
             if name == "GOLD" and ENABLE_GOLD_1M:
                 try:
                     fast_cross_1m, cur_fast3_1m, cur_slow10_1m, _, _ = get_ema_cross(symbol, "1m", EMA_FAST_FAST, EMA_SLOW_FAST)
@@ -1146,7 +1149,7 @@ def run_bot():
     logger.info("📋 Конфигурация таймфреймов:")
     for asset, tfs in ASSET_TIMEFRAMES.items():
         logger.info(f"  {asset}: {tfs}")
-    logger.info("ℹ️ GOLD источник: metals.live API + BingX (резерв)")
+    logger.info("ℹ️ GOLD источник: FXStreet + BingX (резерв)")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
